@@ -1,0 +1,68 @@
+/* Flappybird.io practice autopilot. Run as a Chrome DevTools Snippet. */
+(() => {
+  'use strict';
+  const SCALE = 1048576;
+  function wantsFlap(game) {
+    const y = game.birdY / SCALE, v = game.birdVy / SCALE;
+    const pipes = game.snapshot.pipes.filter(p => p.x > -.205);
+    const current = pipes[0], next = pipes[1];
+    let target = current ? current.gapY - .095 : .15;
+    if (current && next && current.x < .30) {
+      target = Math.max(current.gapY-current.halfGap+.105,
+        Math.min(current.gapY+current.halfGap-.33,next.gapY-.095));
+    }
+    // When the next pipe is far away, allow time to descend before climbing.
+    const predicted = y + v * .025 - 2.5 * .025 ** 2;
+    return v <= .05 && predicted < target;
+  }
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { wantsFlap }; return;
+  }
+  if (location.hostname !== 'flappybird.io' && location.hostname !== 'www.flappybird.io') {
+    alert('Open https://flappybird.io/ first.'); return;
+  }
+  window.flappyPracticeBot?.stop();
+  const game = window.__game;
+  if (!game || typeof game.step !== 'function' || typeof game.flap !== 'function' ||
+      !Array.isArray(game.snapshot?.pipes) || game.runSimVersion !== 4) {
+    alert('Game not ready or this version is unsupported. Wait for the game to load and try again.'); return;
+  }
+  const original = game.step;
+  let enabled = false, stopped = false, flaps = 0;
+  const panel = document.createElement('section');
+  panel.style.cssText = 'position:fixed;top:12px;left:12px;z-index:2147483647;background:#111827;color:#e5e7eb;padding:16px;border:1px solid #22d3ee;border-radius:14px;font:14px system-ui;box-shadow:0 8px 30px #0008;max-width:270px';
+  const title = document.createElement('strong'); title.textContent = 'FLAPPY // PRACTICE PILOT';
+  const status = document.createElement('p');
+  const toggle = document.createElement('button'); toggle.textContent = 'Start / Pause (F2)';
+  const quit = document.createElement('button'); quit.textContent = 'Stop (F9)';
+  const help = document.createElement('p'); help.textContent = 'Start the round normally. F2 toggles automatic flaps. Pause stops the bot, not game physics. Refresh removes the script.';
+  for (const b of [toggle,quit]) b.style.cssText='background:#164e63;color:white;border:0;border-radius:6px;padding:8px;margin-right:6px;cursor:pointer';
+  panel.append(title,status,toggle,quit,help); document.body.append(panel);
+  function update() { status.textContent = `${enabled ? 'ON' : 'PAUSED'} · score ${game.score} · ${flaps} auto flaps · unranked`; }
+  function flip() { enabled = !enabled; update(); }
+  function step(dt) {
+    // Mark assisted play unranked, including when paused after using assistance.
+    game.ranked = false;
+    if (enabled && !document.hidden && game.state === 'play' && wantsFlap(game)) {
+      game.flap(); flaps++;
+    }
+    return original.call(this,dt);
+  }
+  function key(event) {
+    if (!['F2','F9'].includes(event.code) || event.repeat) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    if (event.code === 'F9') stop(); else flip();
+  }
+  function stop() {
+    if (stopped) return;
+    stopped = true; enabled = false;
+    if (game.step === step) game.step = original;
+    clearInterval(timer); window.removeEventListener('keydown',key,true); panel.remove();
+    delete window.flappyPracticeBot;
+  }
+  game.step = step;
+  toggle.onclick = flip; quit.onclick = stop;
+  window.addEventListener('keydown',key,true);
+  const timer = setInterval(update,200);
+  window.flappyPracticeBot = {stop}; update();
+})();
