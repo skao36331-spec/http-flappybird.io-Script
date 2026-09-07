@@ -1,68 +1,357 @@
-/* Flappybird.io practice autopilot. Run as a Chrome DevTools Snippet. */
+/*
+ * Flappybird.io FlightDeck
+ * Paste the entire file into Chrome DevTools > Sources > Snippets, then run it.
+ * Tested against flappybird.io on 2026-09-07.
+ */
 (() => {
   'use strict';
-  const SCALE = 1048576;
-  function wantsFlap(game) {
-    const y = game.birdY / SCALE, v = game.birdVy / SCALE;
-    const pipes = game.snapshot.pipes.filter(p => p.x > -.205);
-    const current = pipes[0], next = pipes[1];
-    let target = current ? current.gapY - .095 : .15;
-    if (current && next && current.x < .30) {
-      target = Math.max(current.gapY-current.halfGap+.105,
-        Math.min(current.gapY+current.halfGap-.33,next.gapY-.095));
-    }
-    // When the next pipe is far away, allow time to descend before climbing.
-    const predicted = y + v * .025 - 2.5 * .025 ** 2;
-    return v <= .05 && predicted < target;
-  }
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { wantsFlap }; return;
-  }
-  if (location.hostname !== 'flappybird.io' && location.hostname !== 'www.flappybird.io') {
-    alert('Open https://flappybird.io/ first.'); return;
-  }
-  window.flappyPracticeBot?.stop();
-  const game = window.__game;
-  if (!game || typeof game.step !== 'function' || typeof game.flap !== 'function' ||
-      !Array.isArray(game.snapshot?.pipes) || game.runSimVersion !== 4) {
-    alert('Game not ready or this version is unsupported. Wait for the game to load and try again.'); return;
-  }
-  const original = game.step;
-  let enabled = false, stopped = false, flaps = 0;
+
+  if (window.__flightDeck) window.__flightDeck.destroy();
+
+  const STORAGE_KEY = 'flightdeck.flappybird.io.v3';
+  const GAME_STEP = 1 / 120;
+  const SIM_HZ = 120;
+  const FIXED_SCALE = 1 << 20;
+  const SPEEDS = [1, 2, 5, 10, 25, 50, 100, 250];
+  const MIN_SPEED = 1;
+  const MAX_SPEED = 250;
+  const defaults = {
+    autopilot: true,
+    autoRestart: true,
+    godMode: false,
+    localOnly: true,
+    speed: 1,
+    aimBias: 0,
+    hidden: false,
+  };
+
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch {}
+  const cfg = { ...defaults, ...saved };
+  // Assisted runs are always isolated from the site's competitive rankings.
+  cfg.localOnly = true;
+
+  let game = null;
+  let originalStep = null;
+  let originalTransition = null;
+  let originalNetMode = null;
+  let frameId = 0;
+  let lastFrameAt = performance.now();
+  let extraStepAccumulator = 0;
+  let targetY = 0;
+  let nextPipeX = null;
+  let simulatedSteps = 0;
+  let displayedSteps = 0;
+  let flapCount = 0;
+  let sessionBest = 0;
+  let lastStatsAt = performance.now();
+  let destroyed = false;
+
+  const save = () => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg)); } catch {}
+  };
+
+  const style = document.createElement('style');
+  style.id = 'flightdeck-style';
+  style.textContent = `
+    #flightdeck{--cyan:#43e7ff;--violet:#8b5cf6;--green:#63f5b0;position:fixed;z-index:2147483647;top:16px;right:16px;width:348px;color:#f8fbff;background:linear-gradient(155deg,rgba(15,19,31,.985),rgba(5,8,16,.985));border:1px solid rgba(132,172,255,.22);border-radius:22px;box-shadow:0 24px 80px #000b,0 0 0 1px #0008,inset 0 1px 0 #ffffff12;font:600 12px/1.35 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backdrop-filter:blur(22px);overflow:hidden;user-select:none;isolation:isolate}
+    #flightdeck:before{content:"";position:absolute;z-index:-1;width:240px;height:170px;right:-90px;top:-90px;background:radial-gradient(circle,#6e5cff38,transparent 70%);pointer-events:none}#flightdeck *{box-sizing:border-box}
+    #flightdeck.fd-hidden{width:auto}.fd-hidden .fd-body{display:none}.fd-hidden .fd-title small,.fd-hidden .fd-close,.fd-hidden .fd-livebadge{display:none}
+    .fd-head{display:flex;align-items:center;gap:11px;padding:14px 15px;cursor:move;background:linear-gradient(90deg,#7158ff1c,#34dbff0b);border-bottom:1px solid #ffffff10}.fd-logo{position:relative;display:grid;place-items:center;width:36px;height:36px;border-radius:12px;background:linear-gradient(145deg,var(--violet),#34cfff);box-shadow:0 8px 24px #735dff55;font-size:17px}.fd-logo:after{content:"";position:absolute;inset:3px;border:1px solid #ffffff3d;border-radius:9px}.fd-title{flex:1;font-size:14px;font-weight:850;letter-spacing:.35px}.fd-title small{display:block;color:#7f8ba4;font-size:8px;font-weight:750;text-transform:uppercase;letter-spacing:1.45px;margin-top:3px}.fd-livebadge{display:flex;align-items:center;gap:6px;color:#9ba7bd;font-size:8px;letter-spacing:1px}.fd-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 12px var(--green);animation:fdpulse 1.8s infinite}@keyframes fdpulse{50%{opacity:.4;transform:scale(.8)}}.fd-close{border:0;background:#ffffff08;color:#8995aa;width:27px;height:27px;border-radius:8px;font-size:17px;cursor:pointer}.fd-close:hover{color:white;background:#ffffff14}
+    .fd-body{padding:14px}.fd-hero{display:flex;align-items:center;justify-content:space-between;padding:14px 15px;margin-bottom:10px;border:1px solid #6d7cff25;border-radius:15px;background:linear-gradient(135deg,#725cff17,#26d9ff0a)}.fd-eyebrow{display:block;color:#7f8ca6;font-size:8px;letter-spacing:1.3px;text-transform:uppercase}.fd-hero strong{display:block;margin-top:2px;font-size:30px;line-height:1;font-weight:900;letter-spacing:-1.4px;background:linear-gradient(90deg,#fff,#89ebff);-webkit-background-clip:text;color:transparent}.fd-orb{display:grid;place-items:center;width:46px;height:46px;border-radius:50%;color:#8cf8ff;background:radial-gradient(circle at 36% 30%,#46e7ff4d,#7657ff18 58%,#080b14 60%);border:1px solid #5ae5ff40;box-shadow:0 0 24px #3cd7ff20;font-size:9px;letter-spacing:1px}
+    .fd-status{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:11px}.fd-card{padding:9px 8px;border-radius:11px;background:#ffffff08;border:1px solid #ffffff0d}.fd-card span{display:block;color:#748097;font-size:7px;text-transform:uppercase;letter-spacing:1px}.fd-card strong{display:block;margin-top:3px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fd-live{color:var(--green)!important}.fd-warn{color:#ffd166!important}
+    .fd-controls{padding:4px 10px;border:1px solid #ffffff0d;border-radius:14px;background:#ffffff05}.fd-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 1px}.fd-row+.fd-row{border-top:1px solid #ffffff0b}.fd-label{color:#dce3ef;font-size:11px}.fd-label small{display:block;color:#68748a;font-size:9px;font-weight:550;margin-top:1px}.fd-switch{position:relative;width:40px;height:22px;flex:0 0 auto}.fd-switch input{display:none}.fd-switch i{position:absolute;inset:0;border-radius:99px;background:#292f3d;transition:.2s;cursor:pointer}.fd-switch i:after{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 2px 7px #0009}.fd-switch input:checked+i{background:linear-gradient(90deg,#775aff,#28cdeb);box-shadow:0 0 15px #4d9dff29}.fd-switch input:checked+i:after{transform:translateX(18px)}
+    .fd-section{margin-top:12px;padding-top:11px;border-top:1px solid #ffffff10}.fd-section-title{display:flex;justify-content:space-between;align-items:center;color:#7f8aa0;font-size:8px;letter-spacing:1.25px;text-transform:uppercase;margin-bottom:8px}.fd-speed{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.fd-speed button,.fd-nudge{border:1px solid #ffffff12;border-radius:9px;padding:7px 2px;color:#9ca8ba;background:#ffffff08;font:750 10px inherit;cursor:pointer;transition:.15s}.fd-speed button:hover,.fd-nudge:hover{transform:translateY(-1px);background:#ffffff12;color:#fff}.fd-speed button.active{color:#fff;border-color:#7884ff78;background:linear-gradient(135deg,#7658f2,#278fc8);box-shadow:0 6px 18px #4b59eb38}
+    .fd-custom{display:grid;grid-template-columns:34px 1fr 34px;gap:7px;margin:8px 0}.fd-nudge{font-size:17px;padding:0}.fd-inputwrap{position:relative}.fd-inputwrap input{width:100%;height:36px;border:1px solid #4d63814a;border-radius:10px;outline:0;background:#050811;color:#eafcff;text-align:center;padding:0 25px 0 10px;font:850 14px inherit}.fd-inputwrap input:focus{border-color:#48dfffb8;box-shadow:0 0 0 3px #39dfff12}.fd-inputwrap span{position:absolute;right:11px;top:9px;color:#64748b}.fd-range{width:100%;height:4px;accent-color:#42d7f4;cursor:pointer}.fd-lock{display:flex;align-items:center;gap:9px;margin-top:11px;padding:9px 10px;color:#95a2b6;background:#55efb40a;border:1px solid #55efb422;border-radius:11px;font-size:9px}.fd-lock b{display:block;color:#aef7d2;font-size:9px;letter-spacing:.55px}.fd-lock-icon{display:grid;place-items:center;width:25px;height:25px;border-radius:8px;background:#4ee5a51a;color:#74efb8;font-size:12px}.fd-foot{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:10px;color:#657188;font-size:8px}.fd-pill{text-align:center;padding:4px 3px;border-radius:6px;background:#ffffff07;border:1px solid #ffffff08}
+    .fd-orb{grid-template-rows:auto auto}.fd-orb span{font-size:11px;font-weight:900;line-height:1}.fd-orb small{font-size:6px;color:#7595a8;letter-spacing:1px}
+    @media(max-width:520px){#flightdeck{width:min(348px,calc(100vw - 16px));top:8px;right:8px}.fd-body{max-height:calc(100vh - 70px);overflow:auto}}
+  `;
+  document.head.appendChild(style);
+
   const panel = document.createElement('section');
-  panel.style.cssText = 'position:fixed;top:12px;left:12px;z-index:2147483647;background:#111827;color:#e5e7eb;padding:16px;border:1px solid #22d3ee;border-radius:14px;font:14px system-ui;box-shadow:0 8px 30px #0008;max-width:270px';
-  const title = document.createElement('strong'); title.textContent = 'FLAPPY // PRACTICE PILOT';
-  const status = document.createElement('p');
-  const toggle = document.createElement('button'); toggle.textContent = 'Start / Pause (F2)';
-  const quit = document.createElement('button'); quit.textContent = 'Stop (F9)';
-  const help = document.createElement('p'); help.textContent = 'Start the round normally. F2 toggles automatic flaps. Pause stops the bot, not game physics. Refresh removes the script.';
-  for (const b of [toggle,quit]) b.style.cssText='background:#164e63;color:white;border:0;border-radius:6px;padding:8px;margin-right:6px;cursor:pointer';
-  panel.append(title,status,toggle,quit,help); document.body.append(panel);
-  function update() { status.textContent = `${enabled ? 'ON' : 'PAUSED'} · score ${game.score} · ${flaps} auto flaps · unranked`; }
-  function flip() { enabled = !enabled; update(); }
-  function step(dt) {
-    // Mark assisted play unranked, including when paused after using assistance.
+  panel.id = 'flightdeck';
+  panel.innerHTML = `
+    <div class="fd-head">
+      <div class="fd-logo">⌁</div>
+      <div class="fd-title">FLIGHTDECK <small>Precision practice console</small></div>
+      <div class="fd-livebadge"><i class="fd-dot"></i> LIVE</div>
+      <button class="fd-close" title="Hide panel (F6)">−</button>
+    </div>
+    <div class="fd-body">
+      <div class="fd-hero"><div><span class="fd-eyebrow">Simulation velocity</span><strong data-stat="speed">1×</strong></div><div class="fd-orb"><span data-stat="rate">1×</span><small>ACTUAL</small></div></div>
+      <div class="fd-status">
+        <div class="fd-card"><span>State</span><strong data-stat="state">WAIT</strong></div>
+        <div class="fd-card"><span>Score</span><strong data-stat="score">0</strong></div>
+        <div class="fd-card"><span>Best</span><strong data-stat="best">0</strong></div>
+        <div class="fd-card"><span>Flaps</span><strong data-stat="flaps">0</strong></div>
+      </div>
+      <div class="fd-controls">
+        <div class="fd-row"><div class="fd-label">Predictive pilot<small>Engine-step trajectory control</small></div><label class="fd-switch"><input data-key="autopilot" type="checkbox"><i></i></label></div>
+        <div class="fd-row"><div class="fd-label">Auto relaunch<small>Starts the next practice run</small></div><label class="fd-switch"><input data-key="autoRestart" type="checkbox"><i></i></label></div>
+        <div class="fd-row"><div class="fd-label">Collision recovery<small>Emergency practice protection</small></div><label class="fd-switch"><input data-key="godMode" type="checkbox"><i></i></label></div>
+      </div>
+      <div class="fd-section">
+        <div class="fd-section-title"><span>Quick velocity presets</span><span>1×—250×</span></div>
+        <div class="fd-speed">${SPEEDS.map(v => `<button data-speed="${v}">${v}×</button>`).join('')}</div>
+        <div class="fd-custom"><button class="fd-nudge" data-nudge="-1">−</button><label class="fd-inputwrap"><input data-role="custom-speed" type="number" min="1" max="250" step="0.25" inputmode="decimal"><span>×</span></label><button class="fd-nudge" data-nudge="1">+</button></div>
+        <input class="fd-range" data-role="speed-range" type="range" min="1" max="250" step="0.25">
+      </div>
+      <div class="fd-section">
+        <div class="fd-section-title"><span>Flight line</span><span data-stat="bias">+0.00</span></div>
+        <input class="fd-range" data-role="bias" type="range" min="-0.10" max="0.10" step="0.01">
+      </div>
+      <div class="fd-lock"><span class="fd-lock-icon">◆</span><span><b>FAIR-PLAY LOCK ACTIVE</b>Assisted runs stay local and unranked.</span></div>
+      <div class="fd-foot"><span class="fd-pill">F2 pilot</span><span class="fd-pill">F3 speed</span><span class="fd-pill">F4 relaunch</span><span class="fd-pill">F5 recovery</span><span class="fd-pill">F6 panel</span><span class="fd-pill">F8 unload</span></div>
+    </div>`;
+  document.body.appendChild(panel);
+
+  const $ = selector => panel.querySelector(selector);
+  const $$ = selector => [...panel.querySelectorAll(selector)];
+  const stat = name => $(`[data-stat="${name}"]`);
+
+  function normalizeSpeed(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return cfg.speed;
+    return Math.round(Math.max(MIN_SPEED, Math.min(MAX_SPEED, numeric)) * 4) / 4;
+  }
+
+  function setSpeed(value) {
+    cfg.speed = normalizeSpeed(value);
+    extraStepAccumulator = 0;
+    syncControls();
+    save();
+  }
+
+  function syncControls() {
+    $$('input[data-key]').forEach(input => { input.checked = Boolean(cfg[input.dataset.key]); });
+    $$('[data-speed]').forEach(button => button.classList.toggle('active', Number(button.dataset.speed) === cfg.speed));
+    $('[data-role="bias"]').value = cfg.aimBias;
+    $('[data-role="custom-speed"]').value = cfg.speed;
+    $('[data-role="speed-range"]').value = cfg.speed;
+    stat('speed').textContent = `${cfg.speed.toFixed(cfg.speed % 1 ? 2 : 0)}×`;
+    stat('bias').textContent = `${cfg.aimBias >= 0 ? '+' : '−'}${Math.abs(cfg.aimBias).toFixed(2)}`;
+    panel.classList.toggle('fd-hidden', cfg.hidden);
+  }
+
+  $$('input[data-key]').forEach(input => input.addEventListener('change', () => {
+    cfg[input.dataset.key] = input.checked;
+    save();
+    applySafetyMode();
+  }));
+  $$('[data-speed]').forEach(button => button.addEventListener('click', () => {
+    setSpeed(button.dataset.speed);
+  }));
+  $('[data-role="custom-speed"]').addEventListener('change', event => setSpeed(event.target.value));
+  $('[data-role="custom-speed"]').addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); setSpeed(event.currentTarget.value); event.currentTarget.blur(); }
+  });
+  $('[data-role="speed-range"]').addEventListener('input', event => setSpeed(event.target.value));
+  $$('[data-nudge]').forEach(button => button.addEventListener('click', () => {
+    const step = cfg.speed < 10 ? 0.25 : cfg.speed < 50 ? 1 : 5;
+    setSpeed(cfg.speed + Number(button.dataset.nudge) * step);
+  }));
+  $('[data-role="bias"]').addEventListener('input', event => {
+    cfg.aimBias = Number(event.target.value);
+    syncControls();
+    save();
+  });
+  $('.fd-close').addEventListener('click', () => {
+    cfg.hidden = !cfg.hidden;
+    syncControls();
+    save();
+  });
+
+  // Draggable panel.
+  let drag = null;
+  $('.fd-head').addEventListener('pointerdown', event => {
+    if (event.target.closest('button')) return;
+    const rect = panel.getBoundingClientRect();
+    drag = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    $('.fd-head').setPointerCapture(event.pointerId);
+  });
+  $('.fd-head').addEventListener('pointermove', event => {
+    if (!drag) return;
+    panel.style.left = `${Math.max(6, Math.min(innerWidth - panel.offsetWidth - 6, event.clientX - drag.x))}px`;
+    panel.style.top = `${Math.max(6, Math.min(innerHeight - 42, event.clientY - drag.y))}px`;
+    panel.style.right = 'auto';
+  });
+  $('.fd-head').addEventListener('pointerup', () => { drag = null; });
+
+  function attachGame() {
+    const candidate = window.__game;
+    if (!candidate || typeof candidate.step !== 'function' || typeof candidate.flap !== 'function') return false;
+    if (candidate === game) return true;
+    if (game && originalStep && game.step !== originalStep) game.step = originalStep;
+    if (game && originalTransition) game.transition = originalTransition;
+    game = candidate;
+    originalStep = game.step;
+    originalTransition = game.transition;
+    originalNetMode = game.netMode;
+    game.step = function flightDeckStep(dt) {
+      if (cfg.localOnly) this.ranked = false;
+      if (cfg.autopilot && !document.hidden && (this.state === 'play' || this.snapshot?.state === 'play') && wantsFlap(this)) {
+        this.flap();
+        flapCount++;
+      }
+      return originalStep.call(this, dt);
+    };
+    game.transition = function patchedTransition(nextState) {
+      if (nextState === 'gameover' && cfg.godMode) {
+        const snap = this.snapshot;
+        const pipe = snap.pipes.find(p => !p.passed && p.x > -0.15);
+        this.birdY = Math.round((pipe ? pipe.gapY : 0) * FIXED_SCALE);
+        this.prevBirdY = this.birdY;
+        this.birdVy = 0;
+        this.deathCause = null;
+        this.flap();
+        flapCount++;
+        return;
+      }
+      return originalTransition.call(this, nextState);
+    };
+    applySafetyMode();
+    return true;
+  }
+
+  function applySafetyMode() {
+    if (!game) return;
+    game.netMode = 'offline';
     game.ranked = false;
-    if (enabled && !document.hidden && game.state === 'play' && wantsFlap(game)) {
-      game.flap(); flaps++;
+  }
+
+  function wantsFlap(activeGame) {
+    const snapshot = activeGame.snapshot;
+    if (!snapshot || !Array.isArray(snapshot.pipes)) return false;
+
+    // birdY and birdVy live on the game object as fixed-point integers. The
+    // snapshot pipe coordinates are already floating point. Mixing those two
+    // coordinate formats was the cause of the old pilot's mistimed flaps.
+    const y = Number(activeGame.birdY) / FIXED_SCALE;
+    const velocity = Number(activeGame.birdVy) / FIXED_SCALE;
+    if (!Number.isFinite(y) || !Number.isFinite(velocity)) return false;
+
+    const pipes = snapshot.pipes
+      .filter(pipe => Number.isFinite(pipe.x) && pipe.x > -0.205)
+      .sort((a, b) => a.x - b.x);
+    const current = pipes[0];
+    if (!current) {
+      nextPipeX = null;
+      targetY = 0.15 + cfg.aimBias;
+    } else {
+      const next = pipes[1];
+      targetY = current.gapY - 0.095 + cfg.aimBias;
+      nextPipeX = current.x;
+
+      // Once close to the current pipe, line up for the next gap while still
+      // clamping the target safely inside the current opening.
+      if (next && current.x < 0.30) {
+        const safeLow = current.gapY - current.halfGap + 0.105;
+        const safeHigh = current.gapY + current.halfGap - 0.33;
+        const nextTarget = next.gapY - 0.095 + cfg.aimBias;
+        targetY = Math.max(safeLow, Math.min(safeHigh, nextTarget));
+      }
     }
-    return original.call(this,dt);
+
+    const predictedY = y + velocity * 0.025 - 2.5 * 0.025 ** 2;
+    return velocity <= 0.05 && predictedY < targetY;
   }
-  function key(event) {
-    if (!['F2','F9'].includes(event.code) || event.repeat) return;
-    event.preventDefault(); event.stopImmediatePropagation();
-    if (event.code === 'F9') stop(); else flip();
+
+  function manageRoundState() {
+    if (!game) return;
+    const snapshot = game.snapshot;
+    if (!snapshot) return;
+    const state = game.state || snapshot.state;
+
+    if (state === 'getready') {
+      if (cfg.localOnly) {
+        game.netMode = 'offline';
+        game.ranked = false;
+      }
+      if (cfg.autopilot) { game.flap(); flapCount++; }
+      return;
+    }
+
+    if (state === 'gameover') {
+      const elapsed = snapshot.stateElapsed ?? game.stateElapsed ?? 1;
+      if (cfg.autoRestart && elapsed > 0.72 && typeof game.restart === 'function') game.restart();
+      return;
+    }
   }
-  function stop() {
-    if (stopped) return;
-    stopped = true; enabled = false;
-    if (game.step === step) game.step = original;
-    clearInterval(timer); window.removeEventListener('keydown',key,true); panel.remove();
-    delete window.flappyPracticeBot;
+
+  function updateStats(now) {
+    if (!game || now - lastStatsAt < 180) return;
+    const snapshot = game.snapshot;
+    const elapsed = (now - lastStatsAt) / 1000;
+    const rate = (simulatedSteps - displayedSteps) / SIM_HZ / elapsed;
+    const score = Number(snapshot.score ?? game.score ?? 0);
+    sessionBest = Math.max(sessionBest, score);
+    displayedSteps = simulatedSteps;
+    lastStatsAt = now;
+    stat('state').textContent = snapshot.state === 'play' ? 'FLYING' : snapshot.state.toUpperCase();
+    stat('state').className = snapshot.state === 'play' ? 'fd-live' : 'fd-warn';
+    stat('score').textContent = score;
+    stat('best').textContent = sessionBest;
+    stat('flaps').textContent = flapCount;
+    stat('rate').textContent = `${Math.max(1, Math.round(rate + 1))}×`;
   }
-  game.step = step;
-  toggle.onclick = flip; quit.onclick = stop;
-  window.addEventListener('keydown',key,true);
-  const timer = setInterval(update,200);
-  window.flappyPracticeBot = {stop}; update();
+
+  function loop(now) {
+    if (destroyed) return;
+    attachGame();
+    const deltaSeconds = Math.min(0.05, Math.max(0, (now - lastFrameAt) / 1000));
+    lastFrameAt = now;
+
+    if (game) {
+      manageRoundState();
+      // The page already supplies the first 1×. We add exact 1/120-second
+      // fixed steps for the remaining multiplier, preserving every collision.
+      extraStepAccumulator = Math.min(1000, extraStepAccumulator + deltaSeconds * SIM_HZ * Math.max(0, cfg.speed - 1));
+      const extraSteps = Math.min(1000, Math.floor(extraStepAccumulator));
+      extraStepAccumulator -= extraSteps;
+      for (let i = 0; i < extraSteps; i++) {
+        game.step(GAME_STEP);
+      }
+      simulatedSteps += extraSteps;
+      updateStats(now);
+    } else {
+      stat('state').textContent = 'WAITING';
+      stat('state').className = 'fd-warn';
+    }
+    frameId = requestAnimationFrame(loop);
+  }
+
+  function onKey(event) {
+    if (event.repeat) return;
+    if (event.code === 'F2') { event.preventDefault(); cfg.autopilot = !cfg.autopilot; }
+    else if (event.code === 'F3') { event.preventDefault(); const next = SPEEDS.find(speed => speed > cfg.speed) ?? SPEEDS[0]; setSpeed(next); return; }
+    else if (event.code === 'F4') { event.preventDefault(); cfg.autoRestart = !cfg.autoRestart; }
+    else if (event.code === 'F5') { event.preventDefault(); cfg.godMode = !cfg.godMode; }
+    else if (event.code === 'F6') { event.preventDefault(); cfg.hidden = !cfg.hidden; }
+    else if (event.code === 'F8') { event.preventDefault(); api.destroy(); return; }
+    else return;
+    syncControls();
+    save();
+  }
+  window.addEventListener('keydown', onKey, true);
+
+  const api = window.__flightDeck = {
+    config: cfg,
+    setSpeed(multiplier) {
+      setSpeed(multiplier);
+    },
+    destroy() {
+      destroyed = true;
+      cancelAnimationFrame(frameId);
+      window.removeEventListener('keydown', onKey, true);
+      if (game && originalStep && game.step !== originalStep) game.step = originalStep;
+      if (game && originalTransition) game.transition = originalTransition;
+      panel.remove();
+      style.remove();
+      delete window.__flightDeck;
+    },
+  };
+
+  syncControls();
+  frameId = requestAnimationFrame(loop);
+  console.info('[FlightDeck] Loaded. F2 bot · F3 speed · F4 restart · F6 panel · F8 unload');
 })();
