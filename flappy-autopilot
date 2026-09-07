@@ -1,20 +1,22 @@
 /*
- * Flappybird.io FlightDeck
+ * ggalex69 — Flappybird.io FlightDeck
  * Paste the entire file into Chrome DevTools > Sources > Snippets, then run it.
  * Tested against flappybird.io on 2026-09-07.
  */
 (() => {
   'use strict';
 
-  if (window.__flightDeck) window.__flightDeck.destroy();
+  if (window.__ggalex69) window.__ggalex69.destroy();
 
-  const STORAGE_KEY = 'flightdeck.flappybird.io.v3';
+  const STORAGE_KEY = 'ggalex69.flappybird.io.v1';
   const GAME_STEP = 1 / 120;
   const SIM_HZ = 120;
   const FIXED_SCALE = 1 << 20;
   const SPEEDS = [1, 2, 5, 10, 25, 50, 100, 250];
   const MIN_SPEED = 1;
   const MAX_SPEED = 250;
+  const BIAS_MIN = -0.10;
+  const BIAS_MAX = 0.10;
   const defaults = {
     autopilot: true,
     autoRestart: true,
@@ -52,56 +54,219 @@
   };
 
   const style = document.createElement('style');
-  style.id = 'flightdeck-style';
+  style.id = 'ggalex69-style';
   style.textContent = `
-    #flightdeck{--cyan:#43e7ff;--violet:#8b5cf6;--green:#63f5b0;position:fixed;z-index:2147483647;top:16px;right:16px;width:348px;color:#f8fbff;background:linear-gradient(155deg,rgba(15,19,31,.985),rgba(5,8,16,.985));border:1px solid rgba(132,172,255,.22);border-radius:22px;box-shadow:0 24px 80px #000b,0 0 0 1px #0008,inset 0 1px 0 #ffffff12;font:600 12px/1.35 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;backdrop-filter:blur(22px);overflow:hidden;user-select:none;isolation:isolate}
-    #flightdeck:before{content:"";position:absolute;z-index:-1;width:240px;height:170px;right:-90px;top:-90px;background:radial-gradient(circle,#6e5cff38,transparent 70%);pointer-events:none}#flightdeck *{box-sizing:border-box}
-    #flightdeck.fd-hidden{width:auto}.fd-hidden .fd-body{display:none}.fd-hidden .fd-title small,.fd-hidden .fd-close,.fd-hidden .fd-livebadge{display:none}
-    .fd-head{display:flex;align-items:center;gap:11px;padding:14px 15px;cursor:move;background:linear-gradient(90deg,#7158ff1c,#34dbff0b);border-bottom:1px solid #ffffff10}.fd-logo{position:relative;display:grid;place-items:center;width:36px;height:36px;border-radius:12px;background:linear-gradient(145deg,var(--violet),#34cfff);box-shadow:0 8px 24px #735dff55;font-size:17px}.fd-logo:after{content:"";position:absolute;inset:3px;border:1px solid #ffffff3d;border-radius:9px}.fd-title{flex:1;font-size:14px;font-weight:850;letter-spacing:.35px}.fd-title small{display:block;color:#7f8ba4;font-size:8px;font-weight:750;text-transform:uppercase;letter-spacing:1.45px;margin-top:3px}.fd-livebadge{display:flex;align-items:center;gap:6px;color:#9ba7bd;font-size:8px;letter-spacing:1px}.fd-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 12px var(--green);animation:fdpulse 1.8s infinite}@keyframes fdpulse{50%{opacity:.4;transform:scale(.8)}}.fd-close{border:0;background:#ffffff08;color:#8995aa;width:27px;height:27px;border-radius:8px;font-size:17px;cursor:pointer}.fd-close:hover{color:white;background:#ffffff14}
-    .fd-body{padding:14px}.fd-hero{display:flex;align-items:center;justify-content:space-between;padding:14px 15px;margin-bottom:10px;border:1px solid #6d7cff25;border-radius:15px;background:linear-gradient(135deg,#725cff17,#26d9ff0a)}.fd-eyebrow{display:block;color:#7f8ca6;font-size:8px;letter-spacing:1.3px;text-transform:uppercase}.fd-hero strong{display:block;margin-top:2px;font-size:30px;line-height:1;font-weight:900;letter-spacing:-1.4px;background:linear-gradient(90deg,#fff,#89ebff);-webkit-background-clip:text;color:transparent}.fd-orb{display:grid;place-items:center;width:46px;height:46px;border-radius:50%;color:#8cf8ff;background:radial-gradient(circle at 36% 30%,#46e7ff4d,#7657ff18 58%,#080b14 60%);border:1px solid #5ae5ff40;box-shadow:0 0 24px #3cd7ff20;font-size:9px;letter-spacing:1px}
-    .fd-status{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:11px}.fd-card{padding:9px 8px;border-radius:11px;background:#ffffff08;border:1px solid #ffffff0d}.fd-card span{display:block;color:#748097;font-size:7px;text-transform:uppercase;letter-spacing:1px}.fd-card strong{display:block;margin-top:3px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fd-live{color:var(--green)!important}.fd-warn{color:#ffd166!important}
-    .fd-controls{padding:4px 10px;border:1px solid #ffffff0d;border-radius:14px;background:#ffffff05}.fd-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 1px}.fd-row+.fd-row{border-top:1px solid #ffffff0b}.fd-label{color:#dce3ef;font-size:11px}.fd-label small{display:block;color:#68748a;font-size:9px;font-weight:550;margin-top:1px}.fd-switch{position:relative;width:40px;height:22px;flex:0 0 auto}.fd-switch input{display:none}.fd-switch i{position:absolute;inset:0;border-radius:99px;background:#292f3d;transition:.2s;cursor:pointer}.fd-switch i:after{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 2px 7px #0009}.fd-switch input:checked+i{background:linear-gradient(90deg,#775aff,#28cdeb);box-shadow:0 0 15px #4d9dff29}.fd-switch input:checked+i:after{transform:translateX(18px)}
-    .fd-section{margin-top:12px;padding-top:11px;border-top:1px solid #ffffff10}.fd-section-title{display:flex;justify-content:space-between;align-items:center;color:#7f8aa0;font-size:8px;letter-spacing:1.25px;text-transform:uppercase;margin-bottom:8px}.fd-speed{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.fd-speed button,.fd-nudge{border:1px solid #ffffff12;border-radius:9px;padding:7px 2px;color:#9ca8ba;background:#ffffff08;font:750 10px inherit;cursor:pointer;transition:.15s}.fd-speed button:hover,.fd-nudge:hover{transform:translateY(-1px);background:#ffffff12;color:#fff}.fd-speed button.active{color:#fff;border-color:#7884ff78;background:linear-gradient(135deg,#7658f2,#278fc8);box-shadow:0 6px 18px #4b59eb38}
-    .fd-custom{display:grid;grid-template-columns:34px 1fr 34px;gap:7px;margin:8px 0}.fd-nudge{font-size:17px;padding:0}.fd-inputwrap{position:relative}.fd-inputwrap input{width:100%;height:36px;border:1px solid #4d63814a;border-radius:10px;outline:0;background:#050811;color:#eafcff;text-align:center;padding:0 25px 0 10px;font:850 14px inherit}.fd-inputwrap input:focus{border-color:#48dfffb8;box-shadow:0 0 0 3px #39dfff12}.fd-inputwrap span{position:absolute;right:11px;top:9px;color:#64748b}.fd-range{width:100%;height:4px;accent-color:#42d7f4;cursor:pointer}.fd-lock{display:flex;align-items:center;gap:9px;margin-top:11px;padding:9px 10px;color:#95a2b6;background:#55efb40a;border:1px solid #55efb422;border-radius:11px;font-size:9px}.fd-lock b{display:block;color:#aef7d2;font-size:9px;letter-spacing:.55px}.fd-lock-icon{display:grid;place-items:center;width:25px;height:25px;border-radius:8px;background:#4ee5a51a;color:#74efb8;font-size:12px}.fd-foot{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:10px;color:#657188;font-size:8px}.fd-pill{text-align:center;padding:4px 3px;border-radius:6px;background:#ffffff07;border:1px solid #ffffff08}
-    .fd-orb{grid-template-rows:auto auto}.fd-orb span{font-size:11px;font-weight:900;line-height:1}.fd-orb small{font-size:6px;color:#7595a8;letter-spacing:1px}
-    @media(max-width:520px){#flightdeck{width:min(348px,calc(100vw - 16px));top:8px;right:8px}.fd-body{max-height:calc(100vh - 70px);overflow:auto}}
+    #ggalex69, #ggalex69 * { box-sizing: border-box; }
+    #ggalex69 {
+      --bg-0:#0a0b0d; --bg-1:#131518; --bg-2:#1a1d21; --bg-3:#23272c; --bg-4:#2c3137;
+      --line:#24272c; --line-strong:#363b42;
+      --text-hi:#f1f2f4; --text-mid:#98a0ab; --text-low:#5c626d;
+      --accent:#4c8dff; --accent-hi:#6fa1ff; --accent-dim:#4c8dff20; --accent-text:#06070a;
+      --ok:#35c47f; --ok-dim:#35c47f1c; --warn:#e0a83f;
+      --radius:6px; --radius-sm:5px;
+      --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      all: initial;
+      position: fixed; z-index: 2147483647; top: 16px; right: 16px; width: 360px;
+      background: var(--bg-0); color: var(--text-hi);
+      border: 1px solid var(--line-strong); border-top: 2px solid var(--accent);
+      border-radius: 8px;
+      box-shadow: 0 1px 0 #ffffff08 inset, 0 18px 40px #000000a0;
+      font-family: var(--sans); font-size: 12px; line-height: 1.4;
+      -webkit-font-smoothing: antialiased; user-select: none; overflow: hidden;
+    }
+    #ggalex69 button, #ggalex69 input { font-family: inherit; color: inherit; }
+    #ggalex69.fd-hidden { width: auto; }
+    #ggalex69.fd-hidden .fd-body { display: none; }
+    #ggalex69.fd-hidden .fd-toolbar { border-bottom: 0; }
+
+    .fd-toolbar { display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 12px; background: var(--bg-1); border-bottom: 1px solid var(--line); cursor: move; }
+    .fd-mark { display: grid; place-items: center; width: 24px; height: 24px; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-text); font: 800 10px/1 var(--mono); letter-spacing: .1px; flex: 0 0 auto; box-shadow: 0 1px 0 #ffffff30 inset; }
+    .fd-titles { flex: 1; min-width: 0; }
+    .fd-titles .fd-name { font-size: 12.5px; font-weight: 700; letter-spacing: .1px; color: var(--text-hi); }
+    .fd-titles .fd-sub { font-size: 9.5px; color: var(--text-low); margin-top: 1px; font-weight: 500; }
+    .fd-live { display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 99px; background: var(--bg-3); border: 1px solid var(--line); flex: 0 0 auto; }
+    .fd-live-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--ok); animation: fd-pulse 2.4s ease-in-out infinite; }
+    @keyframes fd-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+    .fd-live-label { font-size: 8.5px; letter-spacing: .6px; color: var(--text-mid); text-transform: uppercase; font-weight: 600; }
+    .fd-min { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2); color: var(--text-mid); cursor: pointer; flex: 0 0 auto; transition: background-color .12s, color .12s, border-color .12s; }
+    .fd-min:hover { background: var(--bg-3); color: var(--text-hi); border-color: var(--line-strong); }
+    .fd-min:active { transform: translateY(1px); }
+
+    .fd-body { padding: 14px; }
+
+    /* Telemetry */
+    .fd-telemetry { background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+    .fd-primary { display: flex; align-items: flex-end; justify-content: space-between; }
+    .fd-primary-label { font: 700 8.5px/1 var(--sans); letter-spacing: 1.1px; text-transform: uppercase; color: var(--text-low); }
+    .fd-primary-value { font: 800 32px/1 var(--mono); letter-spacing: -.8px; color: var(--text-hi); font-variant-numeric: tabular-nums; margin-top: 6px; }
+    .fd-primary-actual { text-align: right; }
+    .fd-primary-actual .fd-actual-val { font: 700 14px/1 var(--mono); color: var(--accent-hi); font-variant-numeric: tabular-nums; }
+    .fd-primary-actual .fd-actual-tag { display: block; font: 700 8px/1 var(--sans); letter-spacing: .8px; color: var(--text-low); text-transform: uppercase; margin-top: 5px; }
+
+    .fd-divider { height: 1px; background: var(--line); margin: 12px 0; }
+
+    .fd-stats { display: grid; grid-template-columns: repeat(4, 1fr); }
+    .fd-stat { padding: 0 12px; position: relative; }
+    .fd-stat:first-child { padding-left: 0; }
+    .fd-stat + .fd-stat { border-left: 1px solid var(--line); }
+    .fd-stat span { display: block; font: 700 8px/1 var(--sans); letter-spacing: .7px; text-transform: uppercase; color: var(--text-low); }
+    .fd-stat strong { display: block; margin-top: 6px; font: 700 14px/1 var(--mono); color: var(--text-hi); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .fd-stat strong.fd-state-live { color: var(--ok); }
+    .fd-stat strong.fd-state-warn { color: var(--warn); }
+
+    /* Feature controls */
+    .fd-group { margin-top: 12px; background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+    .fd-toggle { display: flex; align-items: center; gap: 10px; padding: 11px 12px; cursor: pointer; transition: background-color .12s; }
+    .fd-toggle:hover { background: var(--bg-2); }
+    .fd-toggle + .fd-toggle { border-top: 1px solid var(--line); }
+    .fd-toggle-text { flex: 1; min-width: 0; }
+    .fd-toggle-text .fd-t-label { font-size: 11.5px; font-weight: 650; color: var(--text-hi); }
+    .fd-toggle-text .fd-t-desc { font-size: 9.5px; color: var(--text-low); margin-top: 2px; }
+    .fd-toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+    .fd-switch-track { position: relative; flex: 0 0 auto; width: 34px; height: 19px; border-radius: 99px; background: var(--bg-4); border: 1px solid var(--line-strong); transition: background-color .15s, border-color .15s; }
+    .fd-switch-track::after { content: ""; position: absolute; top: 1.5px; left: 1.5px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-mid); box-shadow: 0 1px 2px #0006; transition: transform .15s, background-color .15s; }
+    .fd-toggle input:checked + .fd-switch-track { background: var(--accent); border-color: var(--accent); }
+    .fd-toggle input:checked + .fd-switch-track::after { transform: translateX(15px); background: #fff; }
+    .fd-toggle input:focus-visible + .fd-switch-track { box-shadow: 0 0 0 2px var(--bg-0), 0 0 0 4px var(--accent); }
+
+    /* Sections */
+    .fd-section { padding-top: 14px; }
+    .fd-section-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 9px; }
+    .fd-section-title { font: 700 8.5px/1 var(--sans); letter-spacing: .9px; text-transform: uppercase; color: var(--text-low); }
+    .fd-section-hint { font: 600 9px/1 var(--mono); color: var(--text-low); }
+
+    .fd-speed-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .fd-speed-grid button { height: 28px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2); color: var(--text-mid); font: 700 10.5px/1 var(--mono); cursor: pointer; transition: background-color .12s, border-color .12s, color .12s, transform .08s; }
+    .fd-speed-grid button:hover { border-color: var(--line-strong); color: var(--text-hi); background: var(--bg-3); }
+    .fd-speed-grid button:active { transform: scale(.96); }
+    .fd-speed-grid button.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); box-shadow: 0 1px 0 #ffffff33 inset; }
+    .fd-speed-grid button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+    .fd-stepper { display: grid; grid-template-columns: 28px 1fr 28px; gap: 6px; margin-top: 9px; }
+    .fd-stepper button { height: 28px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2); color: var(--text-mid); font: 600 14px/1 var(--sans); cursor: pointer; transition: background-color .12s, color .12s; }
+    .fd-stepper button:hover { background: var(--bg-3); color: var(--text-hi); }
+    .fd-stepper button:active { transform: scale(.96); }
+    .fd-value-field { position: relative; }
+    .fd-value-field input { width: 100%; height: 28px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-0); color: var(--text-hi); text-align: center; padding: 0 18px 0 6px; font: 700 12.5px/1 var(--mono); font-variant-numeric: tabular-nums; outline: 0; transition: border-color .12s; }
+    .fd-value-field input:focus { border-color: var(--accent); }
+    .fd-value-field span { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font: 600 9px/1 var(--mono); color: var(--text-low); pointer-events: none; }
+
+    .fd-track-wrap { position: relative; margin-top: 10px; height: 14px; display: flex; align-items: center; }
+    .fd-range { -webkit-appearance: none; appearance: none; width: 100%; height: 3px; border-radius: 99px; background: var(--bg-3); outline: 0; cursor: pointer; margin: 0; }
+    .fd-range::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: var(--text-hi); border: 2px solid var(--bg-0); box-shadow: 0 0 0 1px var(--line-strong); cursor: pointer; margin-top: -1.5px; transition: box-shadow .12s; }
+    .fd-range:hover::-webkit-slider-thumb { box-shadow: 0 0 0 1px var(--accent); }
+    .fd-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--accent); }
+    .fd-range::-moz-range-thumb { width: 13px; height: 13px; border: 0; border-radius: 50%; background: var(--text-hi); box-shadow: 0 0 0 1px var(--line-strong); cursor: pointer; }
+    .fd-range::-moz-range-track { height: 3px; border-radius: 99px; background: transparent; }
+
+    .fd-bias-center { position: absolute; left: 50%; top: 50%; width: 1px; height: 9px; background: var(--line-strong); transform: translate(-50%, -50%); pointer-events: none; z-index: 1; }
+
+    .fd-strip { display: flex; align-items: center; gap: 9px; margin-top: 14px; padding: 9px 10px; border-radius: var(--radius-sm); background: var(--ok-dim); border: 1px solid #35c47f38; }
+    .fd-strip svg { flex: 0 0 auto; color: var(--ok); }
+    .fd-strip-text { font-size: 9.5px; color: var(--text-mid); line-height: 1.4; }
+    .fd-strip-text b { color: var(--ok); font-weight: 700; }
+
+    .fd-cmdbar { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+    .fd-cmd { display: flex; align-items: center; gap: 5px; }
+    .fd-key { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 16px; padding: 0 3px; border: 1px solid var(--line-strong); border-radius: 3px; background: var(--bg-2); font: 700 8.5px/1 var(--mono); color: var(--text-mid); box-shadow: 0 1px 0 var(--line-strong); }
+    .fd-cmd-label { font: 500 8.5px/1 var(--sans); color: var(--text-low); }
+
+    @media (max-width: 520px) {
+      #ggalex69 { width: min(360px, calc(100vw - 16px)); top: 8px; right: 8px; }
+      .fd-body { max-height: calc(100vh - 70px); overflow: auto; }
+    }
   `;
   document.head.appendChild(style);
 
   const panel = document.createElement('section');
-  panel.id = 'flightdeck';
+  panel.id = 'ggalex69';
   panel.innerHTML = `
-    <div class="fd-head">
-      <div class="fd-logo">⌁</div>
-      <div class="fd-title">FLIGHTDECK <small>Precision practice console</small></div>
-      <div class="fd-livebadge"><i class="fd-dot"></i> LIVE</div>
-      <button class="fd-close" title="Hide panel (F6)">−</button>
+    <div class="fd-toolbar">
+      <div class="fd-mark">GG</div>
+      <div class="fd-titles">
+        <div class="fd-name">ggalex69</div>
+        <div class="fd-sub">Practice console</div>
+      </div>
+      <div class="fd-live"><span class="fd-live-dot"></span><span class="fd-live-label">Live</span></div>
+      <button class="fd-min" title="Hide panel (F6)">&minus;</button>
     </div>
     <div class="fd-body">
-      <div class="fd-hero"><div><span class="fd-eyebrow">Simulation velocity</span><strong data-stat="speed">1×</strong></div><div class="fd-orb"><span data-stat="rate">1×</span><small>ACTUAL</small></div></div>
-      <div class="fd-status">
-        <div class="fd-card"><span>State</span><strong data-stat="state">WAIT</strong></div>
-        <div class="fd-card"><span>Score</span><strong data-stat="score">0</strong></div>
-        <div class="fd-card"><span>Best</span><strong data-stat="best">0</strong></div>
-        <div class="fd-card"><span>Flaps</span><strong data-stat="flaps">0</strong></div>
+
+      <div class="fd-telemetry">
+        <div class="fd-primary">
+          <div>
+            <div class="fd-primary-label">Sim velocity</div>
+            <div class="fd-primary-value" data-stat="speed">1&times;</div>
+          </div>
+          <div class="fd-primary-actual">
+            <div class="fd-actual-val" data-stat="rate">1&times;</div>
+            <span class="fd-actual-tag">Actual</span>
+          </div>
+        </div>
+        <div class="fd-divider"></div>
+        <div class="fd-stats">
+          <div class="fd-stat"><span>State</span><strong data-stat="state">Wait</strong></div>
+          <div class="fd-stat"><span>Score</span><strong data-stat="score">0</strong></div>
+          <div class="fd-stat"><span>Best</span><strong data-stat="best">0</strong></div>
+          <div class="fd-stat"><span>Flaps</span><strong data-stat="flaps">0</strong></div>
+        </div>
       </div>
-      <div class="fd-controls">
-        <div class="fd-row"><div class="fd-label">Predictive pilot<small>Engine-step trajectory control</small></div><label class="fd-switch"><input data-key="autopilot" type="checkbox"><i></i></label></div>
-        <div class="fd-row"><div class="fd-label">Auto relaunch<small>Starts the next practice run</small></div><label class="fd-switch"><input data-key="autoRestart" type="checkbox"><i></i></label></div>
-        <div class="fd-row"><div class="fd-label">Collision recovery<small>Emergency practice protection</small></div><label class="fd-switch"><input data-key="godMode" type="checkbox"><i></i></label></div>
+
+      <div class="fd-group">
+        <label class="fd-toggle">
+          <div class="fd-toggle-text">
+            <div class="fd-t-label">Predictive pilot</div>
+            <div class="fd-t-desc">Engine-step trajectory control</div>
+          </div>
+          <input data-key="autopilot" type="checkbox"><span class="fd-switch-track"></span>
+        </label>
+        <label class="fd-toggle">
+          <div class="fd-toggle-text">
+            <div class="fd-t-label">Auto relaunch</div>
+            <div class="fd-t-desc">Starts the next practice run</div>
+          </div>
+          <input data-key="autoRestart" type="checkbox"><span class="fd-switch-track"></span>
+        </label>
+        <label class="fd-toggle">
+          <div class="fd-toggle-text">
+            <div class="fd-t-label">Collision recovery</div>
+            <div class="fd-t-desc">Emergency practice protection</div>
+          </div>
+          <input data-key="godMode" type="checkbox"><span class="fd-switch-track"></span>
+        </label>
       </div>
+
       <div class="fd-section">
-        <div class="fd-section-title"><span>Quick velocity presets</span><span>1×—250×</span></div>
-        <div class="fd-speed">${SPEEDS.map(v => `<button data-speed="${v}">${v}×</button>`).join('')}</div>
-        <div class="fd-custom"><button class="fd-nudge" data-nudge="-1">−</button><label class="fd-inputwrap"><input data-role="custom-speed" type="number" min="1" max="250" step="0.25" inputmode="decimal"><span>×</span></label><button class="fd-nudge" data-nudge="1">+</button></div>
-        <input class="fd-range" data-role="speed-range" type="range" min="1" max="250" step="0.25">
+        <div class="fd-section-head"><span class="fd-section-title">Velocity presets</span><span class="fd-section-hint">1&times;&ndash;250&times;</span></div>
+        <div class="fd-speed-grid">${SPEEDS.map(v => `<button data-speed="${v}">${v}&times;</button>`).join('')}</div>
+        <div class="fd-stepper">
+          <button class="fd-nudge" data-nudge="-1">&minus;</button>
+          <div class="fd-value-field"><input data-role="custom-speed" type="number" min="1" max="250" step="0.25" inputmode="decimal"><span>&times;</span></div>
+          <button class="fd-nudge" data-nudge="1">+</button>
+        </div>
+        <div class="fd-track-wrap"><input class="fd-range" data-role="speed-range" type="range" min="1" max="250" step="0.25"></div>
       </div>
+
       <div class="fd-section">
-        <div class="fd-section-title"><span>Flight line</span><span data-stat="bias">+0.00</span></div>
-        <input class="fd-range" data-role="bias" type="range" min="-0.10" max="0.10" step="0.01">
+        <div class="fd-section-head"><span class="fd-section-title">Flight line</span><span class="fd-section-hint" data-stat="bias">+0.00</span></div>
+        <div class="fd-track-wrap"><span class="fd-bias-center"></span><input class="fd-range" data-role="bias" type="range" min="-0.10" max="0.10" step="0.01"></div>
       </div>
-      <div class="fd-lock"><span class="fd-lock-icon">◆</span><span><b>FAIR-PLAY LOCK ACTIVE</b>Assisted runs stay local and unranked.</span></div>
-      <div class="fd-foot"><span class="fd-pill">F2 pilot</span><span class="fd-pill">F3 speed</span><span class="fd-pill">F4 relaunch</span><span class="fd-pill">F5 recovery</span><span class="fd-pill">F6 panel</span><span class="fd-pill">F8 unload</span></div>
+
+      <div class="fd-strip">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/><path d="M9 12l2 2 4-4"/></svg>
+        <div class="fd-strip-text"><b>Fair-play lock active.</b> Assisted runs stay local and unranked.</div>
+      </div>
+
+      <div class="fd-cmdbar">
+        <div class="fd-cmd"><span class="fd-key">F2</span><span class="fd-cmd-label">Pilot</span></div>
+        <div class="fd-cmd"><span class="fd-key">F3</span><span class="fd-cmd-label">Speed</span></div>
+        <div class="fd-cmd"><span class="fd-key">F4</span><span class="fd-cmd-label">Relaunch</span></div>
+        <div class="fd-cmd"><span class="fd-key">F5</span><span class="fd-cmd-label">Recovery</span></div>
+        <div class="fd-cmd"><span class="fd-key">F6</span><span class="fd-cmd-label">Panel</span></div>
+        <div class="fd-cmd"><span class="fd-key">F8</span><span class="fd-cmd-label">Unload</span></div>
+      </div>
+
     </div>`;
   document.body.appendChild(panel);
 
@@ -122,15 +287,30 @@
     save();
   }
 
+  function paintRange(input, min, max, value, fromCenter) {
+    const clamped = Math.max(min, Math.min(max, value));
+    const pctVal = ((clamped - min) / (max - min)) * 100;
+    if (fromCenter) {
+      const pctZero = ((0 - min) / (max - min)) * 100;
+      const lo = Math.min(pctZero, pctVal);
+      const hi = Math.max(pctZero, pctVal);
+      input.style.background = `linear-gradient(to right, var(--bg-3) 0%, var(--bg-3) ${lo}%, var(--accent) ${lo}%, var(--accent) ${hi}%, var(--bg-3) ${hi}%, var(--bg-3) 100%)`;
+    } else {
+      input.style.background = `linear-gradient(to right, var(--accent) 0%, var(--accent) ${pctVal}%, var(--bg-3) ${pctVal}%, var(--bg-3) 100%)`;
+    }
+  }
+
   function syncControls() {
     $$('input[data-key]').forEach(input => { input.checked = Boolean(cfg[input.dataset.key]); });
     $$('[data-speed]').forEach(button => button.classList.toggle('active', Number(button.dataset.speed) === cfg.speed));
     $('[data-role="bias"]').value = cfg.aimBias;
     $('[data-role="custom-speed"]').value = cfg.speed;
     $('[data-role="speed-range"]').value = cfg.speed;
-    stat('speed').textContent = `${cfg.speed.toFixed(cfg.speed % 1 ? 2 : 0)}×`;
+    stat('speed').innerHTML = `${cfg.speed.toFixed(cfg.speed % 1 ? 2 : 0)}&times;`;
     stat('bias').textContent = `${cfg.aimBias >= 0 ? '+' : '−'}${Math.abs(cfg.aimBias).toFixed(2)}`;
     panel.classList.toggle('fd-hidden', cfg.hidden);
+    paintRange($('[data-role="speed-range"]'), MIN_SPEED, MAX_SPEED, cfg.speed, false);
+    paintRange($('[data-role="bias"]'), BIAS_MIN, BIAS_MAX, cfg.aimBias, true);
   }
 
   $$('input[data-key]').forEach(input => input.addEventListener('change', () => {
@@ -155,7 +335,7 @@
     syncControls();
     save();
   });
-  $('.fd-close').addEventListener('click', () => {
+  $('.fd-min').addEventListener('click', () => {
     cfg.hidden = !cfg.hidden;
     syncControls();
     save();
@@ -163,19 +343,19 @@
 
   // Draggable panel.
   let drag = null;
-  $('.fd-head').addEventListener('pointerdown', event => {
+  $('.fd-toolbar').addEventListener('pointerdown', event => {
     if (event.target.closest('button')) return;
     const rect = panel.getBoundingClientRect();
     drag = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-    $('.fd-head').setPointerCapture(event.pointerId);
+    $('.fd-toolbar').setPointerCapture(event.pointerId);
   });
-  $('.fd-head').addEventListener('pointermove', event => {
+  $('.fd-toolbar').addEventListener('pointermove', event => {
     if (!drag) return;
     panel.style.left = `${Math.max(6, Math.min(innerWidth - panel.offsetWidth - 6, event.clientX - drag.x))}px`;
     panel.style.top = `${Math.max(6, Math.min(innerHeight - 42, event.clientY - drag.y))}px`;
     panel.style.right = 'auto';
   });
-  $('.fd-head').addEventListener('pointerup', () => { drag = null; });
+  $('.fd-toolbar').addEventListener('pointerup', () => { drag = null; });
 
   function attachGame() {
     const candidate = window.__game;
@@ -187,7 +367,7 @@
     originalStep = game.step;
     originalTransition = game.transition;
     originalNetMode = game.netMode;
-    game.step = function flightDeckStep(dt) {
+    game.step = function ggalex69Step(dt) {
       if (cfg.localOnly) this.ranked = false;
       if (cfg.autopilot && !document.hidden && (this.state === 'play' || this.snapshot?.state === 'play') && wantsFlap(this)) {
         this.flap();
@@ -287,12 +467,13 @@
     sessionBest = Math.max(sessionBest, score);
     displayedSteps = simulatedSteps;
     lastStatsAt = now;
-    stat('state').textContent = snapshot.state === 'play' ? 'FLYING' : snapshot.state.toUpperCase();
-    stat('state').className = snapshot.state === 'play' ? 'fd-live' : 'fd-warn';
+    const isPlaying = snapshot.state === 'play';
+    stat('state').textContent = isPlaying ? 'Flying' : snapshot.state.charAt(0).toUpperCase() + snapshot.state.slice(1);
+    stat('state').className = isPlaying ? 'fd-state-live' : 'fd-state-warn';
     stat('score').textContent = score;
     stat('best').textContent = sessionBest;
     stat('flaps').textContent = flapCount;
-    stat('rate').textContent = `${Math.max(1, Math.round(rate + 1))}×`;
+    stat('rate').innerHTML = `${Math.max(1, Math.round(rate + 1))}&times;`;
   }
 
   function loop(now) {
@@ -314,8 +495,8 @@
       simulatedSteps += extraSteps;
       updateStats(now);
     } else {
-      stat('state').textContent = 'WAITING';
-      stat('state').className = 'fd-warn';
+      stat('state').textContent = 'Waiting';
+      stat('state').className = 'fd-state-warn';
     }
     frameId = requestAnimationFrame(loop);
   }
@@ -334,7 +515,7 @@
   }
   window.addEventListener('keydown', onKey, true);
 
-  const api = window.__flightDeck = {
+  const api = window.__ggalex69 = {
     config: cfg,
     setSpeed(multiplier) {
       setSpeed(multiplier);
@@ -347,11 +528,11 @@
       if (game && originalTransition) game.transition = originalTransition;
       panel.remove();
       style.remove();
-      delete window.__flightDeck;
+      delete window.__ggalex69;
     },
   };
 
   syncControls();
   frameId = requestAnimationFrame(loop);
-  console.info('[FlightDeck] Loaded. F2 bot · F3 speed · F4 restart · F6 panel · F8 unload');
+  console.info('[ggalex69] Loaded. F2 bot · F3 speed · F4 restart · F6 panel · F8 unload');
 })();
