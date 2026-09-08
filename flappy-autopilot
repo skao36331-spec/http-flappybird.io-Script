@@ -1,22 +1,30 @@
 /*
  * ggalex69 — Flappybird.io FlightDeck
  * Paste the entire file into Chrome DevTools > Sources > Snippets, then run it.
- * Tested against flappybird.io on 2026-09-07.
  */
 (() => {
   'use strict';
 
   if (window.__ggalex69) window.__ggalex69.destroy();
 
-  const STORAGE_KEY = 'ggalex69.flappybird.io.v1';
+  const STORAGE_KEY = 'ggalex69.flappybird.io.v2';
   const GAME_STEP = 1 / 120;
   const SIM_HZ = 120;
   const FIXED_SCALE = 1 << 20;
-  const SPEEDS = [1, 2, 5, 10, 25, 50, 100, 250];
+
+  const SPEEDS = [
+    1, 2, 5, 10,
+    25, 50, 100, 250,
+    500, 1000, 2500, 5000, 10000
+  ];
+
   const MIN_SPEED = 1;
-  const MAX_SPEED = 250;
+  const MAX_SPEED = 10000;
+  const SPEED_SLIDER_MAX = 1000;
+
   const BIAS_MIN = -0.10;
   const BIAS_MAX = 0.10;
+
   const defaults = {
     autopilot: true,
     autoRestart: true,
@@ -28,20 +36,28 @@
   };
 
   let saved = {};
-  try { saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch {}
+
+  try {
+    saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  } catch {}
+
   const cfg = { ...defaults, ...saved };
-  // Assisted runs are always isolated from the site's competitive rankings.
+
+  // Assisted runs remain offline/local.
   cfg.localOnly = true;
 
   let game = null;
   let originalStep = null;
   let originalTransition = null;
   let originalNetMode = null;
+
   let frameId = 0;
   let lastFrameAt = performance.now();
   let extraStepAccumulator = 0;
+
   let targetY = 0;
   let nextPipeX = null;
+
   let simulatedSteps = 0;
   let displayedSteps = 0;
   let flapCount = 0;
@@ -50,489 +66,1902 @@
   let destroyed = false;
 
   const save = () => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg)); } catch {}
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+    } catch {}
   };
 
+  /* =========================================================
+     UI
+     ========================================================= */
+
   const style = document.createElement('style');
+
   style.id = 'ggalex69-style';
+
   style.textContent = `
-    #ggalex69, #ggalex69 * { box-sizing: border-box; }
-    #ggalex69 {
-      --bg-0:#0a0b0d; --bg-1:#131518; --bg-2:#1a1d21; --bg-3:#23272c; --bg-4:#2c3137;
-      --line:#24272c; --line-strong:#363b42;
-      --text-hi:#f1f2f4; --text-mid:#98a0ab; --text-low:#5c626d;
-      --accent:#4c8dff; --accent-hi:#6fa1ff; --accent-dim:#4c8dff20; --accent-text:#06070a;
-      --ok:#35c47f; --ok-dim:#35c47f1c; --warn:#e0a83f;
-      --radius:6px; --radius-sm:5px;
-      --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
-      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      all: initial;
-      position: fixed; z-index: 2147483647; top: 16px; right: 16px; width: 360px;
-      background: var(--bg-0); color: var(--text-hi);
-      border: 1px solid var(--line-strong); border-top: 2px solid var(--accent);
-      border-radius: 8px;
-      box-shadow: 0 1px 0 #ffffff08 inset, 0 18px 40px #000000a0;
-      font-family: var(--sans); font-size: 12px; line-height: 1.4;
-      -webkit-font-smoothing: antialiased; user-select: none; overflow: hidden;
+    #ggalex69, #ggalex69 * {
+      box-sizing: border-box;
     }
-    #ggalex69 button, #ggalex69 input { font-family: inherit; color: inherit; }
-    #ggalex69.fd-hidden { width: auto; }
-    #ggalex69.fd-hidden .fd-body { display: none; }
-    #ggalex69.fd-hidden .fd-toolbar { border-bottom: 0; }
 
-    .fd-toolbar { display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 12px; background: var(--bg-1); border-bottom: 1px solid var(--line); cursor: move; }
-    .fd-mark { display: grid; place-items: center; width: 24px; height: 24px; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-text); font: 800 10px/1 var(--mono); letter-spacing: .1px; flex: 0 0 auto; box-shadow: 0 1px 0 #ffffff30 inset; }
-    .fd-titles { flex: 1; min-width: 0; }
-    .fd-titles .fd-name { font-size: 12.5px; font-weight: 700; letter-spacing: .1px; color: var(--text-hi); }
-    .fd-titles .fd-sub { font-size: 9.5px; color: var(--text-low); margin-top: 1px; font-weight: 500; }
-    .fd-live { display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 99px; background: var(--bg-3); border: 1px solid var(--line); flex: 0 0 auto; }
-    .fd-live-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--ok); animation: fd-pulse 2.4s ease-in-out infinite; }
-    @keyframes fd-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
-    .fd-live-label { font-size: 8.5px; letter-spacing: .6px; color: var(--text-mid); text-transform: uppercase; font-weight: 600; }
-    .fd-min { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2); color: var(--text-mid); cursor: pointer; flex: 0 0 auto; transition: background-color .12s, color .12s, border-color .12s; }
-    .fd-min:hover { background: var(--bg-3); color: var(--text-hi); border-color: var(--line-strong); }
-    .fd-min:active { transform: translateY(1px); }
+    #ggalex69 {
+      --bg-0:#0a0b0d;
+      --bg-1:#131518;
+      --bg-2:#1a1d21;
+      --bg-3:#23272c;
+      --bg-4:#2c3137;
 
-    .fd-body { padding: 14px; }
+      --line:#24272c;
+      --line-strong:#363b42;
 
-    /* Telemetry */
-    .fd-telemetry { background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
-    .fd-primary { display: flex; align-items: flex-end; justify-content: space-between; }
-    .fd-primary-label { font: 700 8.5px/1 var(--sans); letter-spacing: 1.1px; text-transform: uppercase; color: var(--text-low); }
-    .fd-primary-value { font: 800 32px/1 var(--mono); letter-spacing: -.8px; color: var(--text-hi); font-variant-numeric: tabular-nums; margin-top: 6px; }
-    .fd-primary-actual { text-align: right; }
-    .fd-primary-actual .fd-actual-val { font: 700 14px/1 var(--mono); color: var(--accent-hi); font-variant-numeric: tabular-nums; }
-    .fd-primary-actual .fd-actual-tag { display: block; font: 700 8px/1 var(--sans); letter-spacing: .8px; color: var(--text-low); text-transform: uppercase; margin-top: 5px; }
+      --text-hi:#f1f2f4;
+      --text-mid:#98a0ab;
+      --text-low:#5c626d;
 
-    .fd-divider { height: 1px; background: var(--line); margin: 12px 0; }
+      --accent:#4c8dff;
+      --accent-hi:#6fa1ff;
+      --accent-text:#06070a;
 
-    .fd-stats { display: grid; grid-template-columns: repeat(4, 1fr); }
-    .fd-stat { padding: 0 12px; position: relative; }
-    .fd-stat:first-child { padding-left: 0; }
-    .fd-stat + .fd-stat { border-left: 1px solid var(--line); }
-    .fd-stat span { display: block; font: 700 8px/1 var(--sans); letter-spacing: .7px; text-transform: uppercase; color: var(--text-low); }
-    .fd-stat strong { display: block; margin-top: 6px; font: 700 14px/1 var(--mono); color: var(--text-hi); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .fd-stat strong.fd-state-live { color: var(--ok); }
-    .fd-stat strong.fd-state-warn { color: var(--warn); }
+      --ok:#35c47f;
+      --ok-dim:#35c47f1c;
+      --warn:#e0a83f;
 
-    /* Feature controls */
-    .fd-group { margin-top: 12px; background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
-    .fd-toggle { display: flex; align-items: center; gap: 10px; padding: 11px 12px; cursor: pointer; transition: background-color .12s; }
-    .fd-toggle:hover { background: var(--bg-2); }
-    .fd-toggle + .fd-toggle { border-top: 1px solid var(--line); }
-    .fd-toggle-text { flex: 1; min-width: 0; }
-    .fd-toggle-text .fd-t-label { font-size: 11.5px; font-weight: 650; color: var(--text-hi); }
-    .fd-toggle-text .fd-t-desc { font-size: 9.5px; color: var(--text-low); margin-top: 2px; }
-    .fd-toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-    .fd-switch-track { position: relative; flex: 0 0 auto; width: 34px; height: 19px; border-radius: 99px; background: var(--bg-4); border: 1px solid var(--line-strong); transition: background-color .15s, border-color .15s; }
-    .fd-switch-track::after { content: ""; position: absolute; top: 1.5px; left: 1.5px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-mid); box-shadow: 0 1px 2px #0006; transition: transform .15s, background-color .15s; }
-    .fd-toggle input:checked + .fd-switch-track { background: var(--accent); border-color: var(--accent); }
-    .fd-toggle input:checked + .fd-switch-track::after { transform: translateX(15px); background: #fff; }
-    .fd-toggle input:focus-visible + .fd-switch-track { box-shadow: 0 0 0 2px var(--bg-0), 0 0 0 4px var(--accent); }
+      --radius:6px;
+      --radius-sm:5px;
 
-    /* Sections */
-    .fd-section { padding-top: 14px; }
-    .fd-section-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 9px; }
-    .fd-section-title { font: 700 8.5px/1 var(--sans); letter-spacing: .9px; text-transform: uppercase; color: var(--text-low); }
-    .fd-section-hint { font: 600 9px/1 var(--mono); color: var(--text-low); }
+      --mono:ui-monospace,"SF Mono","Cascadia Mono","JetBrains Mono",Consolas,monospace;
+      --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
 
-    .fd-speed-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-    .fd-speed-grid button { height: 28px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2); color: var(--text-mid); font: 700 10.5px/1 var(--mono); cursor: pointer; transition: background-color .12s, border-color .12s, color .12s, transform .08s; }
-    .fd-speed-grid button:hover { border-color: var(--line-strong); color: var(--text-hi); background: var(--bg-3); }
-    .fd-speed-grid button:active { transform: scale(.96); }
-    .fd-speed-grid button.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); box-shadow: 0 1px 0 #ffffff33 inset; }
-    .fd-speed-grid button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      all:initial;
 
-    .fd-stepper { display: grid; grid-template-columns: 28px 1fr 28px; gap: 6px; margin-top: 9px; }
-    .fd-stepper button { height: 28px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2); color: var(--text-mid); font: 600 14px/1 var(--sans); cursor: pointer; transition: background-color .12s, color .12s; }
-    .fd-stepper button:hover { background: var(--bg-3); color: var(--text-hi); }
-    .fd-stepper button:active { transform: scale(.96); }
-    .fd-value-field { position: relative; }
-    .fd-value-field input { width: 100%; height: 28px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-0); color: var(--text-hi); text-align: center; padding: 0 18px 0 6px; font: 700 12.5px/1 var(--mono); font-variant-numeric: tabular-nums; outline: 0; transition: border-color .12s; }
-    .fd-value-field input:focus { border-color: var(--accent); }
-    .fd-value-field span { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font: 600 9px/1 var(--mono); color: var(--text-low); pointer-events: none; }
+      position:fixed;
+      z-index:2147483647;
+      top:16px;
+      right:16px;
 
-    .fd-track-wrap { position: relative; margin-top: 10px; height: 14px; display: flex; align-items: center; }
-    .fd-range { -webkit-appearance: none; appearance: none; width: 100%; height: 3px; border-radius: 99px; background: var(--bg-3); outline: 0; cursor: pointer; margin: 0; }
-    .fd-range::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: var(--text-hi); border: 2px solid var(--bg-0); box-shadow: 0 0 0 1px var(--line-strong); cursor: pointer; margin-top: -1.5px; transition: box-shadow .12s; }
-    .fd-range:hover::-webkit-slider-thumb { box-shadow: 0 0 0 1px var(--accent); }
-    .fd-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--accent); }
-    .fd-range::-moz-range-thumb { width: 13px; height: 13px; border: 0; border-radius: 50%; background: var(--text-hi); box-shadow: 0 0 0 1px var(--line-strong); cursor: pointer; }
-    .fd-range::-moz-range-track { height: 3px; border-radius: 99px; background: transparent; }
+      width:380px;
 
-    .fd-bias-center { position: absolute; left: 50%; top: 50%; width: 1px; height: 9px; background: var(--line-strong); transform: translate(-50%, -50%); pointer-events: none; z-index: 1; }
+      background:var(--bg-0);
+      color:var(--text-hi);
 
-    .fd-strip { display: flex; align-items: center; gap: 9px; margin-top: 14px; padding: 9px 10px; border-radius: var(--radius-sm); background: var(--ok-dim); border: 1px solid #35c47f38; }
-    .fd-strip svg { flex: 0 0 auto; color: var(--ok); }
-    .fd-strip-text { font-size: 9.5px; color: var(--text-mid); line-height: 1.4; }
-    .fd-strip-text b { color: var(--ok); font-weight: 700; }
+      border:1px solid var(--line-strong);
+      border-top:2px solid var(--accent);
 
-    .fd-cmdbar { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); flex-wrap: wrap; }
-    .fd-cmd { display: flex; align-items: center; gap: 5px; }
-    .fd-key { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 16px; padding: 0 3px; border: 1px solid var(--line-strong); border-radius: 3px; background: var(--bg-2); font: 700 8.5px/1 var(--mono); color: var(--text-mid); box-shadow: 0 1px 0 var(--line-strong); }
-    .fd-cmd-label { font: 500 8.5px/1 var(--sans); color: var(--text-low); }
+      border-radius:8px;
 
-    @media (max-width: 520px) {
-      #ggalex69 { width: min(360px, calc(100vw - 16px)); top: 8px; right: 8px; }
-      .fd-body { max-height: calc(100vh - 70px); overflow: auto; }
+      box-shadow:
+        0 1px 0 #ffffff08 inset,
+        0 18px 40px #000000a0;
+
+      font-family:var(--sans);
+      font-size:12px;
+      line-height:1.4;
+
+      -webkit-font-smoothing:antialiased;
+      user-select:none;
+      overflow:hidden;
+    }
+
+    #ggalex69 button,
+    #ggalex69 input {
+      font-family:inherit;
+      color:inherit;
+    }
+
+    #ggalex69.fd-hidden {
+      width:auto;
+    }
+
+    #ggalex69.fd-hidden .fd-body {
+      display:none;
+    }
+
+    #ggalex69.fd-hidden .fd-toolbar {
+      border-bottom:0;
+    }
+
+    /* ================= HEADER ================= */
+
+    .fd-toolbar {
+      display:flex;
+      align-items:center;
+      gap:10px;
+
+      height:46px;
+      padding:0 12px;
+
+      background:var(--bg-1);
+      border-bottom:1px solid var(--line);
+
+      cursor:move;
+    }
+
+    .fd-mark {
+      display:grid;
+      place-items:center;
+
+      width:24px;
+      height:24px;
+
+      border-radius:var(--radius-sm);
+
+      background:var(--accent);
+      color:var(--accent-text);
+
+      font:800 10px/1 var(--mono);
+    }
+
+    .fd-titles {
+      flex:1;
+      min-width:0;
+    }
+
+    .fd-name {
+      font-size:12.5px;
+      font-weight:700;
+      color:var(--text-hi);
+    }
+
+    .fd-sub {
+      font-size:9.5px;
+      color:var(--text-low);
+      margin-top:1px;
+    }
+
+    .fd-live {
+      display:flex;
+      align-items:center;
+      gap:5px;
+
+      padding:4px 8px;
+
+      border-radius:99px;
+
+      background:var(--bg-3);
+      border:1px solid var(--line);
+    }
+
+    .fd-live-dot {
+      width:5px;
+      height:5px;
+      border-radius:50%;
+
+      background:var(--ok);
+
+      animation:fd-pulse 2.4s ease-in-out infinite;
+    }
+
+    @keyframes fd-pulse {
+      0%,100% { opacity:1; }
+      50% { opacity:.35; }
+    }
+
+    .fd-live-label {
+      font-size:8.5px;
+      letter-spacing:.6px;
+      color:var(--text-mid);
+      text-transform:uppercase;
+      font-weight:600;
+    }
+
+    .fd-min {
+      display:grid;
+      place-items:center;
+
+      width:24px;
+      height:24px;
+
+      border:1px solid var(--line);
+      border-radius:var(--radius-sm);
+
+      background:var(--bg-2);
+      color:var(--text-mid);
+
+      cursor:pointer;
+    }
+
+    .fd-min:hover {
+      background:var(--bg-3);
+      color:var(--text-hi);
+    }
+
+    .fd-body {
+      padding:14px;
+    }
+
+    /* ================= TELEMETRY ================= */
+
+    .fd-telemetry {
+      background:var(--bg-1);
+
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+
+      padding:12px 14px;
+    }
+
+    .fd-primary {
+      display:flex;
+      align-items:flex-end;
+      justify-content:space-between;
+    }
+
+    .fd-primary-label {
+      font:700 8.5px/1 var(--sans);
+
+      letter-spacing:1.1px;
+      text-transform:uppercase;
+
+      color:var(--text-low);
+    }
+
+    .fd-primary-value {
+      font:800 30px/1 var(--mono);
+
+      letter-spacing:-.8px;
+
+      color:var(--text-hi);
+
+      font-variant-numeric:tabular-nums;
+
+      margin-top:6px;
+    }
+
+    .fd-primary-actual {
+      text-align:right;
+    }
+
+    .fd-actual-val {
+      font:700 14px/1 var(--mono);
+      color:var(--accent-hi);
+      font-variant-numeric:tabular-nums;
+    }
+
+    .fd-actual-tag {
+      display:block;
+
+      font:700 8px/1 var(--sans);
+
+      letter-spacing:.8px;
+
+      color:var(--text-low);
+
+      text-transform:uppercase;
+
+      margin-top:5px;
+    }
+
+    .fd-divider {
+      height:1px;
+      background:var(--line);
+      margin:12px 0;
+    }
+
+    .fd-stats {
+      display:grid;
+      grid-template-columns:repeat(4,1fr);
+    }
+
+    .fd-stat {
+      padding:0 10px;
+      position:relative;
+      min-width:0;
+    }
+
+    .fd-stat:first-child {
+      padding-left:0;
+    }
+
+    .fd-stat + .fd-stat {
+      border-left:1px solid var(--line);
+    }
+
+    .fd-stat span {
+      display:block;
+
+      font:700 8px/1 var(--sans);
+
+      letter-spacing:.7px;
+      text-transform:uppercase;
+
+      color:var(--text-low);
+    }
+
+    .fd-stat strong {
+      display:block;
+
+      margin-top:6px;
+
+      font:700 13px/1 var(--mono);
+
+      color:var(--text-hi);
+
+      font-variant-numeric:tabular-nums;
+
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+
+    .fd-state-live {
+      color:var(--ok)!important;
+    }
+
+    .fd-state-warn {
+      color:var(--warn)!important;
+    }
+
+    /* ================= TOGGLES ================= */
+
+    .fd-group {
+      margin-top:12px;
+
+      background:var(--bg-1);
+
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+
+      overflow:hidden;
+    }
+
+    .fd-toggle {
+      display:flex;
+      align-items:center;
+      gap:10px;
+
+      padding:11px 12px;
+
+      cursor:pointer;
+    }
+
+    .fd-toggle:hover {
+      background:var(--bg-2);
+    }
+
+    .fd-toggle + .fd-toggle {
+      border-top:1px solid var(--line);
+    }
+
+    .fd-toggle-text {
+      flex:1;
+      min-width:0;
+    }
+
+    .fd-t-label {
+      font-size:11.5px;
+      font-weight:650;
+      color:var(--text-hi);
+    }
+
+    .fd-t-desc {
+      font-size:9.5px;
+      color:var(--text-low);
+      margin-top:2px;
+    }
+
+    .fd-toggle input {
+      position:absolute;
+      opacity:0;
+      width:1px;
+      height:1px;
+    }
+
+    .fd-switch-track {
+      position:relative;
+
+      flex:0 0 auto;
+
+      width:34px;
+      height:19px;
+
+      border-radius:99px;
+
+      background:var(--bg-4);
+      border:1px solid var(--line-strong);
+    }
+
+    .fd-switch-track::after {
+      content:"";
+
+      position:absolute;
+
+      top:1.5px;
+      left:1.5px;
+
+      width:14px;
+      height:14px;
+
+      border-radius:50%;
+
+      background:var(--text-mid);
+
+      transition:transform .15s;
+    }
+
+    .fd-toggle input:checked + .fd-switch-track {
+      background:var(--accent);
+      border-color:var(--accent);
+    }
+
+    .fd-toggle input:checked + .fd-switch-track::after {
+      transform:translateX(15px);
+      background:#fff;
+    }
+
+    /* ================= SECTIONS ================= */
+
+    .fd-section {
+      padding-top:14px;
+    }
+
+    .fd-section-head {
+      display:flex;
+      align-items:baseline;
+      justify-content:space-between;
+
+      margin-bottom:9px;
+    }
+
+    .fd-section-title {
+      font:700 8.5px/1 var(--sans);
+
+      letter-spacing:.9px;
+      text-transform:uppercase;
+
+      color:var(--text-low);
+    }
+
+    .fd-section-hint {
+      font:600 9px/1 var(--mono);
+      color:var(--text-low);
+    }
+
+    /* ================= SPEED ================= */
+
+    .fd-speed-grid {
+      display:grid;
+      grid-template-columns:repeat(4,1fr);
+      gap:6px;
+    }
+
+    .fd-speed-grid button {
+      height:29px;
+
+      border:1px solid var(--line);
+      border-radius:var(--radius-sm);
+
+      background:var(--bg-2);
+      color:var(--text-mid);
+
+      font:700 10px/1 var(--mono);
+
+      cursor:pointer;
+
+      transition:
+        background-color .12s,
+        border-color .12s,
+        color .12s,
+        transform .08s;
+    }
+
+    .fd-speed-grid button:hover {
+      border-color:var(--line-strong);
+      color:var(--text-hi);
+      background:var(--bg-3);
+    }
+
+    .fd-speed-grid button:active {
+      transform:scale(.96);
+    }
+
+    .fd-speed-grid button.active {
+      background:var(--accent);
+      border-color:var(--accent);
+      color:var(--accent-text);
+    }
+
+    /* ================= STEPPER ================= */
+
+    .fd-stepper {
+      display:grid;
+      grid-template-columns:28px 1fr 28px;
+
+      gap:6px;
+
+      margin-top:9px;
+    }
+
+    .fd-stepper button {
+      height:28px;
+
+      border:1px solid var(--line);
+      border-radius:var(--radius-sm);
+
+      background:var(--bg-2);
+      color:var(--text-mid);
+
+      cursor:pointer;
+    }
+
+    .fd-stepper button:hover {
+      background:var(--bg-3);
+      color:var(--text-hi);
+    }
+
+    .fd-value-field {
+      position:relative;
+    }
+
+    .fd-value-field input {
+      width:100%;
+      height:28px;
+
+      border:1px solid var(--line);
+      border-radius:var(--radius-sm);
+
+      background:var(--bg-0);
+      color:var(--text-hi);
+
+      text-align:center;
+
+      padding:0 20px 0 6px;
+
+      font:700 12.5px/1 var(--mono);
+
+      font-variant-numeric:tabular-nums;
+
+      outline:0;
+    }
+
+    .fd-value-field input:focus {
+      border-color:var(--accent);
+    }
+
+    .fd-value-field span {
+      position:absolute;
+
+      right:8px;
+      top:50%;
+
+      transform:translateY(-50%);
+
+      font:600 9px/1 var(--mono);
+
+      color:var(--text-low);
+
+      pointer-events:none;
+    }
+
+    /* ================= SLIDER ================= */
+
+    .fd-track-wrap {
+      position:relative;
+
+      margin-top:10px;
+
+      height:14px;
+
+      display:flex;
+      align-items:center;
+    }
+
+    .fd-range {
+      -webkit-appearance:none;
+      appearance:none;
+
+      width:100%;
+      height:3px;
+
+      border-radius:99px;
+
+      background:var(--bg-3);
+
+      outline:0;
+
+      cursor:pointer;
+
+      margin:0;
+    }
+
+    .fd-range::-webkit-slider-thumb {
+      -webkit-appearance:none;
+
+      width:13px;
+      height:13px;
+
+      border-radius:50%;
+
+      background:var(--text-hi);
+
+      border:2px solid var(--bg-0);
+
+      box-shadow:0 0 0 1px var(--line-strong);
+
+      cursor:pointer;
+    }
+
+    .fd-range::-moz-range-thumb {
+      width:13px;
+      height:13px;
+
+      border:0;
+
+      border-radius:50%;
+
+      background:var(--text-hi);
+    }
+
+    .fd-bias-center {
+      position:absolute;
+
+      left:50%;
+      top:50%;
+
+      width:1px;
+      height:9px;
+
+      background:var(--line-strong);
+
+      transform:translate(-50%,-50%);
+
+      pointer-events:none;
+      z-index:1;
+    }
+
+    /* ================= FAIR PLAY ================= */
+
+    .fd-strip {
+      display:flex;
+      align-items:center;
+      gap:9px;
+
+      margin-top:14px;
+
+      padding:9px 10px;
+
+      border-radius:var(--radius-sm);
+
+      background:var(--ok-dim);
+
+      border:1px solid #35c47f38;
+    }
+
+    .fd-strip svg {
+      flex:0 0 auto;
+      color:var(--ok);
+    }
+
+    .fd-strip-text {
+      font-size:9.5px;
+      color:var(--text-mid);
+      line-height:1.4;
+    }
+
+    .fd-strip-text b {
+      color:var(--ok);
+      font-weight:700;
+    }
+
+    /* ================= SHORTCUTS ================= */
+
+    .fd-cmdbar {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+
+      gap:4px;
+
+      margin-top:12px;
+      padding-top:11px;
+
+      border-top:1px solid var(--line);
+
+      flex-wrap:wrap;
+    }
+
+    .fd-cmd {
+      display:flex;
+      align-items:center;
+      gap:4px;
+    }
+
+    .fd-key {
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+
+      min-width:17px;
+      height:16px;
+
+      padding:0 3px;
+
+      border:1px solid var(--line-strong);
+      border-radius:3px;
+
+      background:var(--bg-2);
+
+      font:700 8px/1 var(--mono);
+
+      color:var(--text-mid);
+    }
+
+    .fd-cmd-label {
+      font:500 8px/1 var(--sans);
+      color:var(--text-low);
+    }
+
+    @media(max-width:520px) {
+      #ggalex69 {
+        width:min(380px,calc(100vw - 16px));
+        top:8px;
+        right:8px;
+      }
+
+      .fd-body {
+        max-height:calc(100vh - 70px);
+        overflow:auto;
+      }
     }
   `;
+
   document.head.appendChild(style);
 
   const panel = document.createElement('section');
+
   panel.id = 'ggalex69';
+
   panel.innerHTML = `
     <div class="fd-toolbar">
       <div class="fd-mark">GG</div>
+
       <div class="fd-titles">
         <div class="fd-name">ggalex69</div>
         <div class="fd-sub">Practice console</div>
       </div>
-      <div class="fd-live"><span class="fd-live-dot"></span><span class="fd-live-label">Live</span></div>
+
+      <div class="fd-live">
+        <span class="fd-live-dot"></span>
+        <span class="fd-live-label">Live</span>
+      </div>
+
       <button class="fd-min" title="Hide panel (F6)">&minus;</button>
     </div>
+
     <div class="fd-body">
 
       <div class="fd-telemetry">
+
         <div class="fd-primary">
           <div>
             <div class="fd-primary-label">Sim velocity</div>
             <div class="fd-primary-value" data-stat="speed">1&times;</div>
           </div>
+
           <div class="fd-primary-actual">
             <div class="fd-actual-val" data-stat="rate">1&times;</div>
             <span class="fd-actual-tag">Actual</span>
           </div>
         </div>
+
         <div class="fd-divider"></div>
+
         <div class="fd-stats">
-          <div class="fd-stat"><span>State</span><strong data-stat="state">Wait</strong></div>
-          <div class="fd-stat"><span>Score</span><strong data-stat="score">0</strong></div>
-          <div class="fd-stat"><span>Best</span><strong data-stat="best">0</strong></div>
-          <div class="fd-stat"><span>Flaps</span><strong data-stat="flaps">0</strong></div>
+          <div class="fd-stat">
+            <span>State</span>
+            <strong data-stat="state">Wait</strong>
+          </div>
+
+          <div class="fd-stat">
+            <span>Score</span>
+            <strong data-stat="score">0</strong>
+          </div>
+
+          <div class="fd-stat">
+            <span>Best</span>
+            <strong data-stat="best">0</strong>
+          </div>
+
+          <div class="fd-stat">
+            <span>Flaps</span>
+            <strong data-stat="flaps">0</strong>
+          </div>
         </div>
+
       </div>
 
       <div class="fd-group">
+
         <label class="fd-toggle">
           <div class="fd-toggle-text">
             <div class="fd-t-label">Predictive pilot</div>
             <div class="fd-t-desc">Engine-step trajectory control</div>
           </div>
-          <input data-key="autopilot" type="checkbox"><span class="fd-switch-track"></span>
+
+          <input data-key="autopilot" type="checkbox">
+          <span class="fd-switch-track"></span>
         </label>
+
         <label class="fd-toggle">
           <div class="fd-toggle-text">
             <div class="fd-t-label">Auto relaunch</div>
             <div class="fd-t-desc">Starts the next practice run</div>
           </div>
-          <input data-key="autoRestart" type="checkbox"><span class="fd-switch-track"></span>
+
+          <input data-key="autoRestart" type="checkbox">
+          <span class="fd-switch-track"></span>
         </label>
+
         <label class="fd-toggle">
           <div class="fd-toggle-text">
             <div class="fd-t-label">Collision recovery</div>
             <div class="fd-t-desc">Emergency practice protection</div>
           </div>
-          <input data-key="godMode" type="checkbox"><span class="fd-switch-track"></span>
+
+          <input data-key="godMode" type="checkbox">
+          <span class="fd-switch-track"></span>
         </label>
+
       </div>
 
       <div class="fd-section">
-        <div class="fd-section-head"><span class="fd-section-title">Velocity presets</span><span class="fd-section-hint">1&times;&ndash;250&times;</span></div>
-        <div class="fd-speed-grid">${SPEEDS.map(v => `<button data-speed="${v}">${v}&times;</button>`).join('')}</div>
-        <div class="fd-stepper">
-          <button class="fd-nudge" data-nudge="-1">&minus;</button>
-          <div class="fd-value-field"><input data-role="custom-speed" type="number" min="1" max="250" step="0.25" inputmode="decimal"><span>&times;</span></div>
-          <button class="fd-nudge" data-nudge="1">+</button>
+
+        <div class="fd-section-head">
+          <span class="fd-section-title">Velocity presets</span>
+          <span class="fd-section-hint">1&times;&ndash;10,000&times;</span>
         </div>
-        <div class="fd-track-wrap"><input class="fd-range" data-role="speed-range" type="range" min="1" max="250" step="0.25"></div>
+
+        <div class="fd-speed-grid">
+          ${SPEEDS.map(v =>
+            `<button data-speed="${v}">${v.toLocaleString()}&times;</button>`
+          ).join('')}
+        </div>
+
+        <div class="fd-stepper">
+
+          <button class="fd-nudge" data-nudge="-1">&minus;</button>
+
+          <div class="fd-value-field">
+            <input
+              data-role="custom-speed"
+              type="number"
+              min="1"
+              max="10000"
+              step="1"
+              inputmode="numeric"
+            >
+            <span>&times;</span>
+          </div>
+
+          <button class="fd-nudge" data-nudge="1">+</button>
+
+        </div>
+
+        <div class="fd-track-wrap">
+          <input
+            class="fd-range"
+            data-role="speed-range"
+            type="range"
+            min="0"
+            max="${SPEED_SLIDER_MAX}"
+            step="1"
+          >
+        </div>
+
       </div>
 
       <div class="fd-section">
-        <div class="fd-section-head"><span class="fd-section-title">Flight line</span><span class="fd-section-hint" data-stat="bias">+0.00</span></div>
-        <div class="fd-track-wrap"><span class="fd-bias-center"></span><input class="fd-range" data-role="bias" type="range" min="-0.10" max="0.10" step="0.01"></div>
+
+        <div class="fd-section-head">
+          <span class="fd-section-title">Flight line</span>
+          <span class="fd-section-hint" data-stat="bias">+0.00</span>
+        </div>
+
+        <div class="fd-track-wrap">
+          <span class="fd-bias-center"></span>
+
+          <input
+            class="fd-range"
+            data-role="bias"
+            type="range"
+            min="-0.10"
+            max="0.10"
+            step="0.01"
+          >
+        </div>
+
       </div>
 
       <div class="fd-strip">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/><path d="M9 12l2 2 4-4"/></svg>
-        <div class="fd-strip-text"><b>Fair-play lock active.</b> Assisted runs stay local and unranked.</div>
+
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.4"
+        >
+          <path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/>
+          <path d="M9 12l2 2 4-4"/>
+        </svg>
+
+        <div class="fd-strip-text">
+          <b>Fair-play lock active.</b>
+          Assisted runs stay local and unranked.
+        </div>
+
       </div>
 
       <div class="fd-cmdbar">
-        <div class="fd-cmd"><span class="fd-key">F2</span><span class="fd-cmd-label">Pilot</span></div>
-        <div class="fd-cmd"><span class="fd-key">F3</span><span class="fd-cmd-label">Speed</span></div>
-        <div class="fd-cmd"><span class="fd-key">F4</span><span class="fd-cmd-label">Relaunch</span></div>
-        <div class="fd-cmd"><span class="fd-key">F5</span><span class="fd-cmd-label">Recovery</span></div>
-        <div class="fd-cmd"><span class="fd-key">F6</span><span class="fd-cmd-label">Panel</span></div>
-        <div class="fd-cmd"><span class="fd-key">F8</span><span class="fd-cmd-label">Unload</span></div>
+
+        <div class="fd-cmd">
+          <span class="fd-key">F2</span>
+          <span class="fd-cmd-label">Pilot</span>
+        </div>
+
+        <div class="fd-cmd">
+          <span class="fd-key">F3</span>
+          <span class="fd-cmd-label">Speed</span>
+        </div>
+
+        <div class="fd-cmd">
+          <span class="fd-key">F4</span>
+          <span class="fd-cmd-label">Relaunch</span>
+        </div>
+
+        <div class="fd-cmd">
+          <span class="fd-key">F5</span>
+          <span class="fd-cmd-label">Recovery</span>
+        </div>
+
+        <div class="fd-cmd">
+          <span class="fd-key">F6</span>
+          <span class="fd-cmd-label">Panel</span>
+        </div>
+
+        <div class="fd-cmd">
+          <span class="fd-key">F8</span>
+          <span class="fd-cmd-label">Unload</span>
+        </div>
+
       </div>
 
-    </div>`;
+    </div>
+  `;
+
   document.body.appendChild(panel);
 
   const $ = selector => panel.querySelector(selector);
   const $$ = selector => [...panel.querySelectorAll(selector)];
   const stat = name => $(`[data-stat="${name}"]`);
 
+  /* =========================================================
+     SPEED SYSTEM
+     ========================================================= */
+
   function normalizeSpeed(value) {
     const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return cfg.speed;
-    return Math.round(Math.max(MIN_SPEED, Math.min(MAX_SPEED, numeric)) * 4) / 4;
+
+    if (!Number.isFinite(numeric))
+      return cfg.speed;
+
+    return Math.max(
+      MIN_SPEED,
+      Math.min(MAX_SPEED, Math.round(numeric))
+    );
+  }
+
+  function speedToSlider(speed) {
+    const s = Math.max(
+      MIN_SPEED,
+      Math.min(MAX_SPEED, Number(speed))
+    );
+
+    return Math.round(
+      Math.log(s / MIN_SPEED) /
+      Math.log(MAX_SPEED / MIN_SPEED) *
+      SPEED_SLIDER_MAX
+    );
+  }
+
+  function sliderToSpeed(position) {
+    const p = Math.max(
+      0,
+      Math.min(SPEED_SLIDER_MAX, Number(position))
+    );
+
+    const normalized = p / SPEED_SLIDER_MAX;
+
+    return Math.round(
+      MIN_SPEED *
+      Math.pow(
+        MAX_SPEED / MIN_SPEED,
+        normalized
+      )
+    );
+  }
+
+  function formatSpeed(speed) {
+    return Number(speed).toLocaleString();
   }
 
   function setSpeed(value) {
     cfg.speed = normalizeSpeed(value);
+
     extraStepAccumulator = 0;
+
     syncControls();
     save();
   }
 
   function paintRange(input, min, max, value, fromCenter) {
     const clamped = Math.max(min, Math.min(max, value));
-    const pctVal = ((clamped - min) / (max - min)) * 100;
+
+    const pctVal =
+      ((clamped - min) / (max - min)) * 100;
+
     if (fromCenter) {
-      const pctZero = ((0 - min) / (max - min)) * 100;
+      const pctZero =
+        ((0 - min) / (max - min)) * 100;
+
       const lo = Math.min(pctZero, pctVal);
       const hi = Math.max(pctZero, pctVal);
-      input.style.background = `linear-gradient(to right, var(--bg-3) 0%, var(--bg-3) ${lo}%, var(--accent) ${lo}%, var(--accent) ${hi}%, var(--bg-3) ${hi}%, var(--bg-3) 100%)`;
+
+      input.style.background =
+        `linear-gradient(to right,
+        var(--bg-3) 0%,
+        var(--bg-3) ${lo}%,
+        var(--accent) ${lo}%,
+        var(--accent) ${hi}%,
+        var(--bg-3) ${hi}%,
+        var(--bg-3) 100%)`;
+
     } else {
-      input.style.background = `linear-gradient(to right, var(--accent) 0%, var(--accent) ${pctVal}%, var(--bg-3) ${pctVal}%, var(--bg-3) 100%)`;
+      input.style.background =
+        `linear-gradient(to right,
+        var(--accent) 0%,
+        var(--accent) ${pctVal}%,
+        var(--bg-3) ${pctVal}%,
+        var(--bg-3) 100%)`;
     }
   }
 
   function syncControls() {
-    $$('input[data-key]').forEach(input => { input.checked = Boolean(cfg[input.dataset.key]); });
-    $$('[data-speed]').forEach(button => button.classList.toggle('active', Number(button.dataset.speed) === cfg.speed));
+
+    $$('input[data-key]').forEach(input => {
+      input.checked = Boolean(cfg[input.dataset.key]);
+    });
+
+    $$('[data-speed]').forEach(button => {
+      button.classList.toggle(
+        'active',
+        Number(button.dataset.speed) === cfg.speed
+      );
+    });
+
     $('[data-role="bias"]').value = cfg.aimBias;
+
     $('[data-role="custom-speed"]').value = cfg.speed;
-    $('[data-role="speed-range"]').value = cfg.speed;
-    stat('speed').innerHTML = `${cfg.speed.toFixed(cfg.speed % 1 ? 2 : 0)}&times;`;
-    stat('bias').textContent = `${cfg.aimBias >= 0 ? '+' : '−'}${Math.abs(cfg.aimBias).toFixed(2)}`;
-    panel.classList.toggle('fd-hidden', cfg.hidden);
-    paintRange($('[data-role="speed-range"]'), MIN_SPEED, MAX_SPEED, cfg.speed, false);
-    paintRange($('[data-role="bias"]'), BIAS_MIN, BIAS_MAX, cfg.aimBias, true);
+
+    const sliderPos = speedToSlider(cfg.speed);
+
+    $('[data-role="speed-range"]').value = sliderPos;
+
+    stat('speed').innerHTML =
+      `${formatSpeed(cfg.speed)}&times;`;
+
+    stat('bias').textContent =
+      `${cfg.aimBias >= 0 ? '+' : '−'}${Math.abs(cfg.aimBias).toFixed(2)}`;
+
+    panel.classList.toggle(
+      'fd-hidden',
+      cfg.hidden
+    );
+
+    paintRange(
+      $('[data-role="speed-range"]'),
+      0,
+      SPEED_SLIDER_MAX,
+      sliderPos,
+      false
+    );
+
+    paintRange(
+      $('[data-role="bias"]'),
+      BIAS_MIN,
+      BIAS_MAX,
+      cfg.aimBias,
+      true
+    );
   }
 
-  $$('input[data-key]').forEach(input => input.addEventListener('change', () => {
-    cfg[input.dataset.key] = input.checked;
-    save();
-    applySafetyMode();
-  }));
-  $$('[data-speed]').forEach(button => button.addEventListener('click', () => {
-    setSpeed(button.dataset.speed);
-  }));
-  $('[data-role="custom-speed"]').addEventListener('change', event => setSpeed(event.target.value));
-  $('[data-role="custom-speed"]').addEventListener('keydown', event => {
-    if (event.key === 'Enter') { event.preventDefault(); setSpeed(event.currentTarget.value); event.currentTarget.blur(); }
+  /* =========================================================
+     UI EVENTS
+     ========================================================= */
+
+  $$('input[data-key]').forEach(input => {
+    input.addEventListener('change', () => {
+
+      cfg[input.dataset.key] = input.checked;
+
+      save();
+      applySafetyMode();
+    });
   });
-  $('[data-role="speed-range"]').addEventListener('input', event => setSpeed(event.target.value));
-  $$('[data-nudge]').forEach(button => button.addEventListener('click', () => {
-    const step = cfg.speed < 10 ? 0.25 : cfg.speed < 50 ? 1 : 5;
-    setSpeed(cfg.speed + Number(button.dataset.nudge) * step);
-  }));
-  $('[data-role="bias"]').addEventListener('input', event => {
-    cfg.aimBias = Number(event.target.value);
-    syncControls();
-    save();
+
+  $$('[data-speed]').forEach(button => {
+    button.addEventListener('click', () => {
+      setSpeed(button.dataset.speed);
+    });
   });
+
+  $('[data-role="custom-speed"]').addEventListener(
+    'change',
+    event => setSpeed(event.target.value)
+  );
+
+  $('[data-role="custom-speed"]').addEventListener(
+    'keydown',
+    event => {
+
+      if (event.key === 'Enter') {
+        event.preventDefault();
+
+        setSpeed(event.currentTarget.value);
+
+        event.currentTarget.blur();
+      }
+    }
+  );
+
+  $('[data-role="speed-range"]').addEventListener(
+    'input',
+    event => {
+
+      setSpeed(
+        sliderToSpeed(event.target.value)
+      );
+    }
+  );
+
+  $$('[data-nudge]').forEach(button => {
+
+    button.addEventListener('click', () => {
+
+      let step;
+
+      if (cfg.speed < 10)
+        step = 1;
+
+      else if (cfg.speed < 50)
+        step = 5;
+
+      else if (cfg.speed < 250)
+        step = 10;
+
+      else if (cfg.speed < 1000)
+        step = 50;
+
+      else if (cfg.speed < 5000)
+        step = 250;
+
+      else
+        step = 500;
+
+      setSpeed(
+        cfg.speed +
+        Number(button.dataset.nudge) *
+        step
+      );
+    });
+  });
+
+  $('[data-role="bias"]').addEventListener(
+    'input',
+    event => {
+
+      cfg.aimBias = Number(event.target.value);
+
+      syncControls();
+      save();
+    }
+  );
+
   $('.fd-min').addEventListener('click', () => {
+
     cfg.hidden = !cfg.hidden;
+
     syncControls();
     save();
   });
 
-  // Draggable panel.
+  /* =========================================================
+     DRAG
+     ========================================================= */
+
   let drag = null;
-  $('.fd-toolbar').addEventListener('pointerdown', event => {
-    if (event.target.closest('button')) return;
-    const rect = panel.getBoundingClientRect();
-    drag = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-    $('.fd-toolbar').setPointerCapture(event.pointerId);
-  });
-  $('.fd-toolbar').addEventListener('pointermove', event => {
-    if (!drag) return;
-    panel.style.left = `${Math.max(6, Math.min(innerWidth - panel.offsetWidth - 6, event.clientX - drag.x))}px`;
-    panel.style.top = `${Math.max(6, Math.min(innerHeight - 42, event.clientY - drag.y))}px`;
-    panel.style.right = 'auto';
-  });
-  $('.fd-toolbar').addEventListener('pointerup', () => { drag = null; });
+
+  $('.fd-toolbar').addEventListener(
+    'pointerdown',
+    event => {
+
+      if (event.target.closest('button'))
+        return;
+
+      const rect =
+        panel.getBoundingClientRect();
+
+      drag = {
+        x:event.clientX - rect.left,
+        y:event.clientY - rect.top
+      };
+
+      $('.fd-toolbar').setPointerCapture(
+        event.pointerId
+      );
+    }
+  );
+
+  $('.fd-toolbar').addEventListener(
+    'pointermove',
+    event => {
+
+      if (!drag)
+        return;
+
+      panel.style.left =
+        `${Math.max(
+          6,
+          Math.min(
+            innerWidth -
+            panel.offsetWidth -
+            6,
+            event.clientX - drag.x
+          )
+        )}px`;
+
+      panel.style.top =
+        `${Math.max(
+          6,
+          Math.min(
+            innerHeight - 42,
+            event.clientY - drag.y
+          )
+        )}px`;
+
+      panel.style.right = 'auto';
+    }
+  );
+
+  $('.fd-toolbar').addEventListener(
+    'pointerup',
+    () => {
+      drag = null;
+    }
+  );
+
+  /* =========================================================
+     GAME ATTACHMENT
+     ========================================================= */
 
   function attachGame() {
+
     const candidate = window.__game;
-    if (!candidate || typeof candidate.step !== 'function' || typeof candidate.flap !== 'function') return false;
-    if (candidate === game) return true;
-    if (game && originalStep && game.step !== originalStep) game.step = originalStep;
-    if (game && originalTransition) game.transition = originalTransition;
+
+    if (
+      !candidate ||
+      typeof candidate.step !== 'function' ||
+      typeof candidate.flap !== 'function'
+    ) {
+      return false;
+    }
+
+    if (candidate === game)
+      return true;
+
+    if (
+      game &&
+      originalStep &&
+      game.step !== originalStep
+    ) {
+      game.step = originalStep;
+    }
+
+    if (
+      game &&
+      originalTransition
+    ) {
+      game.transition = originalTransition;
+    }
+
     game = candidate;
+
     originalStep = game.step;
     originalTransition = game.transition;
     originalNetMode = game.netMode;
+
     game.step = function ggalex69Step(dt) {
-      if (cfg.localOnly) this.ranked = false;
-      if (cfg.autopilot && !document.hidden && (this.state === 'play' || this.snapshot?.state === 'play') && wantsFlap(this)) {
+
+      if (cfg.localOnly)
+        this.ranked = false;
+
+      if (
+        cfg.autopilot &&
+        !document.hidden &&
+        (
+          this.state === 'play' ||
+          this.snapshot?.state === 'play'
+        ) &&
+        wantsFlap(this)
+      ) {
         this.flap();
         flapCount++;
       }
+
       return originalStep.call(this, dt);
     };
+
     game.transition = function patchedTransition(nextState) {
-      if (nextState === 'gameover' && cfg.godMode) {
+
+      if (
+        nextState === 'gameover' &&
+        cfg.godMode
+      ) {
+
         const snap = this.snapshot;
-        const pipe = snap.pipes.find(p => !p.passed && p.x > -0.15);
-        this.birdY = Math.round((pipe ? pipe.gapY : 0) * FIXED_SCALE);
+
+        const pipe =
+          snap.pipes.find(
+            p =>
+              !p.passed &&
+              p.x > -0.15
+          );
+
+        this.birdY =
+          Math.round(
+            (pipe ? pipe.gapY : 0) *
+            FIXED_SCALE
+          );
+
         this.prevBirdY = this.birdY;
         this.birdVy = 0;
         this.deathCause = null;
+
         this.flap();
+
         flapCount++;
+
         return;
       }
-      return originalTransition.call(this, nextState);
+
+      return originalTransition.call(
+        this,
+        nextState
+      );
     };
+
     applySafetyMode();
+
     return true;
   }
 
   function applySafetyMode() {
-    if (!game) return;
+    if (!game)
+      return;
+
     game.netMode = 'offline';
     game.ranked = false;
   }
 
+  /* =========================================================
+     AUTOPILOT
+     ========================================================= */
+
   function wantsFlap(activeGame) {
+
     const snapshot = activeGame.snapshot;
-    if (!snapshot || !Array.isArray(snapshot.pipes)) return false;
 
-    // birdY and birdVy live on the game object as fixed-point integers. The
-    // snapshot pipe coordinates are already floating point. Mixing those two
-    // coordinate formats was the cause of the old pilot's mistimed flaps.
-    const y = Number(activeGame.birdY) / FIXED_SCALE;
-    const velocity = Number(activeGame.birdVy) / FIXED_SCALE;
-    if (!Number.isFinite(y) || !Number.isFinite(velocity)) return false;
+    if (
+      !snapshot ||
+      !Array.isArray(snapshot.pipes)
+    ) {
+      return false;
+    }
 
-    const pipes = snapshot.pipes
-      .filter(pipe => Number.isFinite(pipe.x) && pipe.x > -0.205)
-      .sort((a, b) => a.x - b.x);
+    const y =
+      Number(activeGame.birdY) /
+      FIXED_SCALE;
+
+    const velocity =
+      Number(activeGame.birdVy) /
+      FIXED_SCALE;
+
+    if (
+      !Number.isFinite(y) ||
+      !Number.isFinite(velocity)
+    ) {
+      return false;
+    }
+
+    const pipes =
+      snapshot.pipes
+        .filter(
+          pipe =>
+            Number.isFinite(pipe.x) &&
+            pipe.x > -0.205
+        )
+        .sort(
+          (a,b) =>
+            a.x - b.x
+        );
+
     const current = pipes[0];
-    if (!current) {
-      nextPipeX = null;
-      targetY = 0.15 + cfg.aimBias;
-    } else {
-      const next = pipes[1];
-      targetY = current.gapY - 0.095 + cfg.aimBias;
-      nextPipeX = current.x;
 
-      // Once close to the current pipe, line up for the next gap while still
-      // clamping the target safely inside the current opening.
-      if (next && current.x < 0.30) {
-        const safeLow = current.gapY - current.halfGap + 0.105;
-        const safeHigh = current.gapY + current.halfGap - 0.33;
-        const nextTarget = next.gapY - 0.095 + cfg.aimBias;
-        targetY = Math.max(safeLow, Math.min(safeHigh, nextTarget));
+    if (!current) {
+
+      nextPipeX = null;
+
+      targetY =
+        0.15 +
+        cfg.aimBias;
+
+    } else {
+
+      const next = pipes[1];
+
+      targetY =
+        current.gapY -
+        0.095 +
+        cfg.aimBias;
+
+      nextPipeX =
+        current.x;
+
+      if (
+        next &&
+        current.x < 0.30
+      ) {
+
+        const safeLow =
+          current.gapY -
+          current.halfGap +
+          0.105;
+
+        const safeHigh =
+          current.gapY +
+          current.halfGap -
+          0.33;
+
+        const nextTarget =
+          next.gapY -
+          0.095 +
+          cfg.aimBias;
+
+        targetY =
+          Math.max(
+            safeLow,
+            Math.min(
+              safeHigh,
+              nextTarget
+            )
+          );
       }
     }
 
-    const predictedY = y + velocity * 0.025 - 2.5 * 0.025 ** 2;
-    return velocity <= 0.05 && predictedY < targetY;
+    const predictedY =
+      y +
+      velocity * 0.025 -
+      2.5 * 0.025 ** 2;
+
+    return (
+      velocity <= 0.05 &&
+      predictedY < targetY
+    );
   }
 
+  /* =========================================================
+     ROUND MANAGEMENT
+     ========================================================= */
+
   function manageRoundState() {
-    if (!game) return;
-    const snapshot = game.snapshot;
-    if (!snapshot) return;
-    const state = game.state || snapshot.state;
+
+    if (!game)
+      return;
+
+    const snapshot =
+      game.snapshot;
+
+    if (!snapshot)
+      return;
+
+    const state =
+      game.state ||
+      snapshot.state;
 
     if (state === 'getready') {
+
       if (cfg.localOnly) {
         game.netMode = 'offline';
         game.ranked = false;
       }
-      if (cfg.autopilot) { game.flap(); flapCount++; }
+
+      if (cfg.autopilot) {
+        game.flap();
+        flapCount++;
+      }
+
       return;
     }
 
     if (state === 'gameover') {
-      const elapsed = snapshot.stateElapsed ?? game.stateElapsed ?? 1;
-      if (cfg.autoRestart && elapsed > 0.72 && typeof game.restart === 'function') game.restart();
+
+      const elapsed =
+        snapshot.stateElapsed ??
+        game.stateElapsed ??
+        1;
+
+      if (
+        cfg.autoRestart &&
+        elapsed > 0.72 &&
+        typeof game.restart === 'function'
+      ) {
+        game.restart();
+      }
+
       return;
     }
   }
 
+  /* =========================================================
+     STATS
+     ========================================================= */
+
   function updateStats(now) {
-    if (!game || now - lastStatsAt < 180) return;
-    const snapshot = game.snapshot;
-    const elapsed = (now - lastStatsAt) / 1000;
-    const rate = (simulatedSteps - displayedSteps) / SIM_HZ / elapsed;
-    const score = Number(snapshot.score ?? game.score ?? 0);
-    sessionBest = Math.max(sessionBest, score);
-    displayedSteps = simulatedSteps;
-    lastStatsAt = now;
-    const isPlaying = snapshot.state === 'play';
-    stat('state').textContent = isPlaying ? 'Flying' : snapshot.state.charAt(0).toUpperCase() + snapshot.state.slice(1);
-    stat('state').className = isPlaying ? 'fd-state-live' : 'fd-state-warn';
-    stat('score').textContent = score;
-    stat('best').textContent = sessionBest;
-    stat('flaps').textContent = flapCount;
-    stat('rate').innerHTML = `${Math.max(1, Math.round(rate + 1))}&times;`;
+
+    if (
+      !game ||
+      now - lastStatsAt < 180
+    ) {
+      return;
+    }
+
+    const snapshot =
+      game.snapshot;
+
+    if (!snapshot)
+      return;
+
+    const elapsed =
+      (now - lastStatsAt) /
+      1000;
+
+    const rate =
+      (simulatedSteps - displayedSteps) /
+      SIM_HZ /
+      elapsed;
+
+    const score =
+      Number(
+        snapshot.score ??
+        game.score ??
+        0
+      );
+
+    sessionBest =
+      Math.max(
+        sessionBest,
+        score
+      );
+
+    displayedSteps =
+      simulatedSteps;
+
+    lastStatsAt =
+      now;
+
+    const state =
+      snapshot.state ||
+      game.state ||
+      'wait';
+
+    const isPlaying =
+      state === 'play';
+
+    stat('state').textContent =
+      isPlaying
+        ? 'Flying'
+        : state.charAt(0).toUpperCase() +
+          state.slice(1);
+
+    stat('state').className =
+      isPlaying
+        ? 'fd-state-live'
+        : 'fd-state-warn';
+
+    stat('score').textContent =
+      score.toLocaleString();
+
+    stat('best').textContent =
+      sessionBest.toLocaleString();
+
+    stat('flaps').textContent =
+      flapCount.toLocaleString();
+
+    stat('rate').innerHTML =
+      `${Math.max(
+        1,
+        Math.round(rate + 1)
+      ).toLocaleString()}&times;`;
+  }
+
+  /* =========================================================
+     HIGH-SPEED SIMULATION
+     ========================================================= */
+
+  function getStepBudget(speed) {
+
+    if (speed <= 250)
+      return 1500;
+
+    if (speed <= 1000)
+      return 4000;
+
+    if (speed <= 2500)
+      return 8000;
+
+    if (speed <= 5000)
+      return 12000;
+
+    return 18000;
   }
 
   function loop(now) {
-    if (destroyed) return;
+
+    if (destroyed)
+      return;
+
     attachGame();
-    const deltaSeconds = Math.min(0.05, Math.max(0, (now - lastFrameAt) / 1000));
+
+    const deltaSeconds =
+      Math.min(
+        0.05,
+        Math.max(
+          0,
+          (now - lastFrameAt) /
+          1000
+        )
+      );
+
     lastFrameAt = now;
 
     if (game) {
+
       manageRoundState();
-      // The page already supplies the first 1×. We add exact 1/120-second
-      // fixed steps for the remaining multiplier, preserving every collision.
-      extraStepAccumulator = Math.min(1000, extraStepAccumulator + deltaSeconds * SIM_HZ * Math.max(0, cfg.speed - 1));
-      const extraSteps = Math.min(1000, Math.floor(extraStepAccumulator));
-      extraStepAccumulator -= extraSteps;
-      for (let i = 0; i < extraSteps; i++) {
+
+      /*
+       * The page itself provides approximately the
+       * first 1x simulation rate.
+       *
+       * FlightDeck supplies the remaining fixed
+       * simulation steps.
+       */
+
+      const requestedSteps =
+        deltaSeconds *
+        SIM_HZ *
+        Math.max(
+          0,
+          cfg.speed - 1
+        );
+
+      extraStepAccumulator +=
+        requestedSteps;
+
+      /*
+       * Avoid enormous catch-up queues if Chrome
+       * pauses the tab or DevTools stalls.
+       */
+
+      const MAX_BACKLOG = 250000;
+
+      if (
+        extraStepAccumulator >
+        MAX_BACKLOG
+      ) {
+        extraStepAccumulator =
+          MAX_BACKLOG;
+      }
+
+      const stepBudget =
+        getStepBudget(cfg.speed);
+
+      const extraSteps =
+        Math.min(
+          stepBudget,
+          Math.floor(
+            extraStepAccumulator
+          )
+        );
+
+      extraStepAccumulator -=
+        extraSteps;
+
+      for (
+        let i = 0;
+        i < extraSteps;
+        i++
+      ) {
         game.step(GAME_STEP);
       }
-      simulatedSteps += extraSteps;
+
+      simulatedSteps +=
+        extraSteps;
+
       updateStats(now);
+
     } else {
-      stat('state').textContent = 'Waiting';
-      stat('state').className = 'fd-state-warn';
+
+      stat('state').textContent =
+        'Waiting';
+
+      stat('state').className =
+        'fd-state-warn';
     }
-    frameId = requestAnimationFrame(loop);
+
+    frameId =
+      requestAnimationFrame(loop);
   }
 
+  /* =========================================================
+     HOTKEYS
+     ========================================================= */
+
   function onKey(event) {
-    if (event.repeat) return;
-    if (event.code === 'F2') { event.preventDefault(); cfg.autopilot = !cfg.autopilot; }
-    else if (event.code === 'F3') { event.preventDefault(); const next = SPEEDS.find(speed => speed > cfg.speed) ?? SPEEDS[0]; setSpeed(next); return; }
-    else if (event.code === 'F4') { event.preventDefault(); cfg.autoRestart = !cfg.autoRestart; }
-    else if (event.code === 'F5') { event.preventDefault(); cfg.godMode = !cfg.godMode; }
-    else if (event.code === 'F6') { event.preventDefault(); cfg.hidden = !cfg.hidden; }
-    else if (event.code === 'F8') { event.preventDefault(); api.destroy(); return; }
-    else return;
+
+    if (event.repeat)
+      return;
+
+    if (event.code === 'F2') {
+
+      event.preventDefault();
+
+      cfg.autopilot =
+        !cfg.autopilot;
+
+    }
+
+    else if (event.code === 'F3') {
+
+      event.preventDefault();
+
+      const next =
+        SPEEDS.find(
+          speed =>
+            speed > cfg.speed
+        ) ??
+        SPEEDS[0];
+
+      setSpeed(next);
+
+      return;
+    }
+
+    else if (event.code === 'F4') {
+
+      event.preventDefault();
+
+      cfg.autoRestart =
+        !cfg.autoRestart;
+
+    }
+
+    else if (event.code === 'F5') {
+
+      event.preventDefault();
+
+      cfg.godMode =
+        !cfg.godMode;
+
+    }
+
+    else if (event.code === 'F6') {
+
+      event.preventDefault();
+
+      cfg.hidden =
+        !cfg.hidden;
+
+    }
+
+    else if (event.code === 'F8') {
+
+      event.preventDefault();
+
+      api.destroy();
+
+      return;
+    }
+
+    else {
+      return;
+    }
+
     syncControls();
     save();
   }
-  window.addEventListener('keydown', onKey, true);
 
-  const api = window.__ggalex69 = {
-    config: cfg,
-    setSpeed(multiplier) {
-      setSpeed(multiplier);
-    },
-    destroy() {
-      destroyed = true;
-      cancelAnimationFrame(frameId);
-      window.removeEventListener('keydown', onKey, true);
-      if (game && originalStep && game.step !== originalStep) game.step = originalStep;
-      if (game && originalTransition) game.transition = originalTransition;
-      panel.remove();
-      style.remove();
-      delete window.__ggalex69;
-    },
-  };
+  window.addEventListener(
+    'keydown',
+    onKey,
+    true
+  );
+
+  /* =========================================================
+     PUBLIC API / CLEANUP
+     ========================================================= */
+
+  const api =
+    window.__ggalex69 = {
+
+      config:cfg,
+
+      setSpeed(multiplier) {
+        setSpeed(multiplier);
+      },
+
+      destroy() {
+
+        destroyed = true;
+
+        cancelAnimationFrame(
+          frameId
+        );
+
+        window.removeEventListener(
+          'keydown',
+          onKey,
+          true
+        );
+
+        if (
+          game &&
+          originalStep &&
+          game.step !== originalStep
+        ) {
+          game.step =
+            originalStep;
+        }
+
+        if (
+          game &&
+          originalTransition
+        ) {
+          game.transition =
+            originalTransition;
+        }
+
+        if (
+          game &&
+          originalNetMode !== null
+        ) {
+          game.netMode =
+            originalNetMode;
+        }
+
+        panel.remove();
+        style.remove();
+
+        delete window.__ggalex69;
+      },
+    };
 
   syncControls();
-  frameId = requestAnimationFrame(loop);
-  console.info('[ggalex69] Loaded. F2 bot · F3 speed · F4 restart · F6 panel · F8 unload');
+
+  frameId =
+    requestAnimationFrame(loop);
+
+  console.info(
+    '[ggalex69] FlightDeck loaded · 1x–10,000x · F2 pilot · F3 speed · F4 restart · F5 recovery · F6 panel · F8 unload'
+  );
+
 })();
